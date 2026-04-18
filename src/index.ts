@@ -5,6 +5,7 @@
 import { logger } from './logger.js';
 import { config } from './config.js';
 import { ksefClient, KsefClient, KsefAuth, createAuth } from './ksef/index.js';
+import { InvoiceFileManager } from './storage/index.js';
 
 const main = async (): Promise<void> => {
   logger.info('Starting KSeF-Insert Integration');
@@ -12,6 +13,10 @@ const main = async (): Promise<void> => {
     ksefBaseUrl: config.ksef.baseUrl,
     insertOutputDir: config.insert.outputDir,
   });
+
+  // Initialize file manager for invoice storage
+  const fileManager = new InvoiceFileManager({ outputDir: config.insert.outputDir });
+  await fileManager.initialize();
 
   // TODO: Implement main CLI logic
   // - Parse command line arguments
@@ -22,6 +27,7 @@ const main = async (): Promise<void> => {
   // const auth = createAuth(ksefClient);
   // const sessionInfo = await auth.authenticate(config.ksef.nip!, config.ksef.token!);
   // const invoices = await ksefClient.queryInvoices({ pageSize: 100 });
+  // await fileManager.saveBatch(invoices);
 };
 
 main().catch((error) => {
