@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>🧾 KSeF Sync - Dashboard</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="container">
+    <!-- Header -->
+    <header class="header">
+      <div class="header-left">
+        <h1>🧾 KSeF Sync</h1>
+      </div>
+      <div class="header-right">
+        <div class="status-indicator">
+          <span id="statusDot" class="dot connected"></span>
+          <span id="statusText">Sprawdzam...</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="main">
+      <!-- Sync Section -->
+      <section class="card sync-section">
+        <h2>⬇️ Synchronizacja</h2>
+
+        <div class="form-group">
+          <label for="dateFrom">Od:</label>
+          <input type="date" id="dateFrom" value="2024-01-01" />
+        </div>
+
+        <div class="form-group">
+          <label for="dateTo">Do:</label>
+          <input type="date" id="dateTo" />
+        </div>
+
+        <div class="form-group">
+          <label>Typ faktur:</label>
+          <div class="radio-group">
+            <label>
+              <input type="radio" name="invoiceType" value="zakup" checked /> Zakup
+            </label>
+            <label>
+              <input type="radio" name="invoiceType" value="sprzedaz" /> Sprzedaż
+            </label>
+            <label>
+              <input type="radio" name="invoiceType" value="wszystkie" /> Oba
+            </label>
+          </div>
+        </div>
+
+        <div class="sync-button-group">
+          <button id="syncButton" class="btn btn-primary">🔄 Synchronizuj</button>
+        </div>
+
+        <div id="progressContainer" class="progress-container hidden">
+          <div class="progress-bar">
+            <div id="progressFill" class="progress-fill"></div>
+          </div>
+          <p id="progressText">Pobieranie faktur...</p>
+        </div>
+
+        <div id="syncResult" class="result hidden">
+          <p><strong>Pobrano:</strong> <span id="resultDownloaded">0</span></p>
+          <p><strong>Pominięto:</strong> <span id="resultSkipped">0</span></p>
+          <p><strong>Błędy:</strong> <span id="resultErrors">0</span></p>
+        </div>
+      </section>
+
+      <!-- Invoices Section -->
+      <section class="card invoices-section">
+        <h2>📋 Pobrane faktury</h2>
+
+        <div class="form-group">
+          <label for="monthSelect">Miesiąc:</label>
+          <select id="monthSelect">
+            <option value="">-- Wszystkie --</option>
+          </select>
+        </div>
+
+        <div class="invoices-table-wrapper">
+          <table class="invoices-table">
+            <thead>
+              <tr>
+                <th>Data</th>
+                <th>NIP</th>
+                <th>Nr KSeF</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="invoicesBody">
+              <tr>
+                <td colspan="4" class="empty">Brak faktur do wyświetlenia</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="invoices-footer">
+          <p>Łącznie: <strong id="invoiceCount">0</strong> faktur</p>
+        </div>
+      </section>
+
+      <!-- Status Section -->
+      <section class="card status-section">
+        <h2>⚙️ Status</h2>
+
+        <div class="status-grid">
+          <div class="status-item">
+            <span class="label">Środowisko:</span>
+            <span id="envStatus" class="value">-</span>
+          </div>
+          <div class="status-item">
+            <span class="label">NIP:</span>
+            <span id="nipStatus" class="value">-</span>
+          </div>
+          <div class="status-item">
+            <span class="label">Ostatnia sync:</span>
+            <span id="lastSyncStatus" class="value">-</span>
+          </div>
+          <div class="status-item">
+            <span class="label">Łącznie faktur:</span>
+            <span id="totalStatus" class="value">-</span>
+          </div>
+          <div class="status-item">
+            <span class="label">Folder:</span>
+            <span id="folderStatus" class="value" style="word-break: break-all">-</span>
+          </div>
+          <div class="status-item">
+            <span class="label">Wersja:</span>
+            <span class="value">1.0.0</span>
+          </div>
+        </div>
+
+        <div class="status-actions">
+          <button id="openFolderBtn" class="btn btn-secondary">📂 Pokaż ścieżkę</button>
+        </div>
+      </section>
+    </main>
+
+    <!-- Footer -->
+    <footer class="footer">
+      <p>KSeF Sync v1.0.0 | Środowisko: <span id="footerEnv">-</span></p>
+    </footer>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

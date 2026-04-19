@@ -1,164 +1,236 @@
-text
-
-
----
-
-### Prompt 5: Dokumentacja + walidacja XSD
-
-```markdown
 ## Kontekst projektu
-Narzędzie CLI do pobierania e-faktur z KSeF (TypeScript).
-Wszystko działa:
-- ✅ KSeF Client
-- ✅ File Manager + Index Tracker
-- ✅ CLI (sync, list, status, get)
-Teraz: dokumentacja po polsku + walidator XSD.
+Mam działające narzędzie CLI do pobierania e-faktur z KSeF
+(TypeScript/Node.js). Klient API, file manager i CLI działają.
+Teraz chcę dodać prosty web UI żeby użytkownik nie musiał
+korzystać z terminala.
 
 ## Pliki do przeczytania
-- Wszystkie pliki w `src/`
-- `README.md`
+- `src/index.ts` → obecne CLI (commander.js)
+- `src/ksef/client.ts` → klient API KSeF
+- `src/storage/file-manager.ts` → zarządzanie plikami XML
+- `src/storage/index-tracker.ts` → śledzenie pobranych faktur
+- `src/config.ts` → konfiguracja .env
 
 ## Cel zadania
-1. Walidator XML vs schemat FA(2)
-2. Kompletna dokumentacja
+Dodaj prosty lokalny web UI (localhost:3000).
+Użytkownik uruchamia JEDNĄ komendę i dostaje dashboard
+w przeglądarce.
 
----
+## Stack UI
+- Serwer: Hono (npm: hono + @hono/node-server)
+- Frontend: statyczne pliki HTML/CSS/JS (bez build stepa)
+- Styl: prosty, nowoczesny, ciemny motyw
+- Ikony: emoji (nie dodawaj bibliotek ikon)
+- Responsywność: nie wymagana (desktop only)
 
-### Część 1: Walidator XML
+## Struktura plików do stworzenia:
+├── src/
+│   ├── server/
+│   │   ├── app.ts           # Hono app + routes
+│   │   ├── api.ts           # REST endpointy
+│   │   └── server.ts        # startuj serwer + otwórz przeglądarkę
+│   └── ui/
+│       ├── index.html       # główna strona
+│       ├── style.css        # style
+│       └── app.js           # logika frontend (vanilla JS)
 
-## Plik: `src/validator/xml-validator.ts`
+## API Endpointy (src/server/api.ts):
 
-```typescript
-class InvoiceXMLValidator {
-  constructor(xsdPath: string)  // ścieżka do FA(2).xsd
-  
-  // Waliduj pojedynczy plik
-  async validate(xmlPath: string): Promise<ValidationResult>
-  // → { valid: boolean, errors: ValidationError[] }
-  
-  // Waliduj folder
-  async validateDir(dirPath: string): Promise<BatchValidationResult>
-  // → { total, valid, invalid, results[] }
+### GET /api/status
+Zwraca aktualny status:
+```json
+{
+  "connected": false,
+  "environment": "test",
+  "nip": "5213000001",
+  "lastSync": "2024-01-15T14:30:00Z",
+  "totalInvoices": 234,
+  "outputDir": "./output/faktury"
 }
-Użyj biblioteki libxmljs2 (obsługuje XSD validation)
-lub alternatywnie xsd-schema-validator.
+POST /api/sync
+Rozpoczyna synchronizację:
+Body:
+{
+  "dateFrom": "2024-01-01",
+  "dateTo": "2024-01-31",
+  "type": "zakup"
+}
+Response (Server-Sent Events dla progressu):
+event: progress
+data: {"current": 5, "total": 47, "status": "Pobieram fakturę 5/47..."}
 
-Output walidacji:
+event: progress  
+data: {"current": 47, "total": 47, "status": "Zapisuję pliki..."}
 
-text
+event: done
+data: {"downloaded": 35, "skipped": 12, "errors": 0}
 
-🔍 Walidacja XML vs schemat FA(2)
-──────────────────────────────────
- ✅ 2024-01-05_521..._ref123.xml
- ✅ 2024-01-12_789..._ref987.xml
- ❌ 2024-01-15_111..._ref555.xml
-    → Linia 23: Element 'P_1' - wymagany ale brak wartości
-    → Linia 45: Element 'NIP' - wartość '123' nie spełnia wzorca
+GET /api/invoices?month=2024-01&type=zakup
+Lista pobranych faktur:
+{
+  "invoices": [
+    {
+      "ksefRef": "ref123",
+      "date": "2024-01-05",
+      "nip": "5213000001",
+      "fileName": "2024-01-05_521..._ref123.xml",
+      "filePath": "./output/faktury/2024-01/zakup/..."
+    }
+  ],
+  "total": 35
+}
+GET /api/invoices/:ksefRef/download
+Pobierz konkretny plik XML (Content-Disposition: attachment).
 
- Wynik: 2/3 poprawne
-Część 2: Dokumentacja
-Plik: docs/instrukcja-uzytkownika.md
-Dla księgowego (osoba nietechniczna):
+POST /api/validate
+Waliduj pobrane XML-e:
+Body: { "month": "2024-01" }
+Response: { "total": 35, "valid": 33, "invalid": 2, "errors": [...] }
 
-Co robi program (2 zdania)
-Wymagania:
-Komputer z Windows/Mac/Linux
-Node.js 20+ (link do pobrania + jak zainstalować)
-Token KSeF (jak uzyskać w MF)
-NIP firmy
-Instalacja (krok po kroku, z przykładami komend)
-Konfiguracja .env:
-Skąd wziąć token KSeF
-(link do strony MF + kroki)
-Jaki NIP wpisać
-Środowisko test vs produkcja
-Pierwsze uruchomienie:
-text
+GET /api/config
+Zwraca aktualną konfigurację (bez tokenów!):
+{
+  "environment": "test",
+  "nip": "5213****01",
+  "outputDir": "./output/faktury",
+  "baseUrl": "https://ksef-test.mf.gov.pl/api"
+}
 
+Frontend (src/ui/index.html):
+Layout:
+┌──────────────────────────────────────────────────┐
+│  🧾 KSeF Sync                    ● Połączono     │
+├──────────────────────────────────────────────────┤
+│                                                   │
+│  ┌─ Synchronizacja ────────────────────────────┐ │
+│  │                                              │ │
+│  │  Od: [2024-01-01]  Do: [2024-01-31]         │ │
+│  │                                              │ │
+│  │  Typ: (●) Zakup  ( ) Sprzedaż  ( ) Oba     │ │
+│  │                                              │ │
+│  │  [ 🔄 Synchronizuj ]                        │ │
+│  │                                              │ │
+│  │  ████████████░░░░░░░░ 24/47 (51%)           │ │
+│  │  Pobieram fakturę 24/47...                   │ │
+│  │                                              │ │
+│  └──────────────────────────────────────────────┘ │
+│                                                   │
+│  ┌─ Pobrane faktury ──────────────────────────┐  │
+│  │                                              │ │
+│  │  Miesiąc: [Styczeń 2024 ▼]                  │ │
+│  │                                              │ │
+│  │  Data       NIP          Nr KSeF      📥    │ │
+│  │  2024-01-05 5213000001   ref123...    [⬇]   │ │
+│  │  2024-01-12 7891234567   ref456...    [⬇]   │ │
+│  │  2024-01-15 1112223334   ref789...    [⬇]   │ │
+│  │  ...                                         │ │
+│  │                                              │ │
+│  │  Łącznie: 35 faktur                          │ │
+│  │                                              │ │
+│  └──────────────────────────────────────────────┘ │
+│                                                   │
+│  ┌─ Status ───────────────────────────────────┐  │
+│  │  Środowisko:    test                        │ │
+│  │  NIP:           5213****01                  │ │
+│  │  Ostatnia sync: 2024-01-15 14:30            │ │
+│  │  Łącznie:       234 faktury                 │ │
+│  │  Folder:        ./output/faktury/           │ │
+│  │  [ 📂 Otwórz folder ]                      │ │
+│  └──────────────────────────────────────────────┘ │
+│                                                   │
+├──────────────────────────────────────────────────┤
+│  KSeF Sync v1.0.0 | Środowisko: test            │
+└──────────────────────────────────────────────────┘
+
+Interakcje:
+Po załadowaniu strony → fetch /api/status → pokaż dane
+
+Klik "Synchronizuj":
+Disable przycisk
+Pokaż progress bar
+EventSource na /api/sync (SSE)
+Po zakończeniu → odśwież listę faktur
+Pokaż podsumowanie (toast/alert)
+
+Zmiana miesiąca → fetch /api/invoices?month=...
+
+Klik ⬇ przy fakturze → pobierz XML
+
+Klik "Otwórz folder" → informacja ze ścieżką
+(nie możemy otworzyć folderu z przeglądarki)
+
+Styl CSS (src/ui/style.css):
+Ciemny motyw (dark mode)
+Background: #1a1a2e lub #0f0f1a
+Karty: #16213e
+Akcent: #0ea5e9 (niebieski)
+Tekst: #e2e8f0
+Sukces: #22c55e
+Błąd: #ef4444
+Font: system-ui
+Border-radius: 8px
+Padding karty: 20px
+Max-width: 900px, wycentrowane
+Tabela: zebra striping
+
+Server startup (src/server/server.ts):
+// 1. Startuj Hono na porcie 3000
+// 2. Serwuj statyczne pliki z src/ui/
+// 3. Automatycznie otwórz przeglądarkę (open npm package)
+// 4. Log: "🧾 KSeF Sync działa na http://localhost:3000"
+
+Zmodyfikuj src/index.ts:
+Dodaj komendę:
+# Uruchom web UI (domyślna komenda)
+npx tsx src/index.ts
+
+# Lub jawnie
+npx tsx src/index.ts ui
+
+# Stare komendy CLI nadal działają
 npx tsx src/index.ts sync --from 2024-01-01 --to 2024-01-31
-Gdzie są pobrane pliki:
-Struktura folderów
-Jak otworzyć XML w Insert
-Codzienne użycie:
-Poranna synchronizacja
-Sprawdzanie statusu
-Rozwiązywanie problemów:
-"Błąd autoryzacji" → token wygasł
-"Timeout" → problemy z serwerem KSeF
-"0 faktur" → sprawdź zakres dat i typ
-"Plik XML nie otwiera się w Insert" → sprawdź wersję
-Plik: docs/instrukcja-techniczna.md
-Dla developera:
 
-Architektura (diagram Mermaid):
-mermaid
+Wymagania:
+Zero build stepa dla frontendu (vanilla JS)
+Serwer i frontend w jednym procesie
+SSE (Server-Sent Events) dla progressu sync
+Automatyczne otwarcie przeglądarki po starcie
+Graceful shutdown (Ctrl+C → zamknij serwer)
+Brak autentykacji (localhost only)
+Zabezpiecz: serwer nasłuchuje TYLKO na 127.0.0.1
+(nie 0.0.0.0 - żeby nie był widoczny w sieci)
 
-flowchart TD
-  CLI[CLI - commander.js] --> Client[KSeF Client]
-  CLI --> FM[File Manager]
-  CLI --> Val[XML Validator]
-  Client --> Auth[Auth Module]
-  Client --> API[KSeF REST API]
-  FM --> IDX[Index Tracker]
-  FM --> Disk[System plików]
-  Val --> XSD[Schemat FA-2 XSD]
-Opis modułów
-Jak dodać nową komendę CLI
-Jak zmienić strukturę folderów
-Testy: jak uruchomić, jak dodać nowe
-CI/CD: jak zautomatyzować
-Znane ograniczenia
-Plik: docs/ksef-api.md
-Skrócona dokumentacja API KSeF:
+Nowe zależności:
+hono
+@hono/node-server
+open (do otwarcia przeglądarki)
 
-Środowiska + URL-e
-Autentykacja (flow)
-Endpointy (request/response examples)
-Kody błędów KSeF
-Rate limits
-Schemat FA(2) - opis najważniejszych pól
-Plik: docs/changelog.md
-v1.0.0 - Pierwsza wersja
-Pobieranie faktur zakupowych i sprzedażowych
-Zapis XML na dysk
-Śledzenie duplikatów
-Walidacja vs schemat FA(2)
-CLI z komendami: sync, list, status, get, validate
-Część 3: Finalne README.md
-Markdown
+Testy
+Plik: tests/server/api.test.ts
 
-# 🧾 KSeF Sync - Pobieranie e-faktur z KSeF
+GET /api/status → 200 + poprawna struktura
+GET /api/invoices → lista faktur
+GET /api/config → config bez tokenów
+POST /api/sync → SSE stream z progressem
+GET /api/invoices/:ref/download → plik XML
 
-Narzędzie CLI do automatycznego pobierania e-faktur
-z Krajowego Systemu e-Faktur (KSeF) i zapisywania
-jako pliki XML gotowe do otwarcia w programie Insert.
-
-## Quick Start
-1. `git clone ...`
-2. `pnpm install`
-3. `cp .env.example .env` → uzupełnij token i NIP
-4. `pnpm run sync -- --from 2024-01-01 --to 2024-01-31`
-5. Pliki XML w `./output/faktury/`
-
-## Komendy
-...
-
-## Dokumentacja
-- [Instrukcja użytkownika](docs/instrukcja-uzytkownika.md)
-- [Instrukcja techniczna](docs/instrukcja-techniczna.md)
-- [API KSeF](docs/ksef-api.md)
-
-## Licencja
-MIT
-Testy walidatora
-Plik: tests/validator/xml-validator.test.ts
-
-Poprawny XML FA(2) → valid: true
-Brakujące pole wymagane → valid: false + czytelny błąd
-Niepoprawny NIP → błąd walidacji
-Plik nie-XML → obsłużony error
-Walidacja folderu z 5 plikami (3 ok, 2 błędne)
 Nie rób
-Nie modyfikuj istniejącego kodu w src/
-(chyba że znajdziesz buga)
-Nie zmieniaj istniejących testów
+Nie używaj React, Vue, Svelte (vanilla JS only)
+Nie dodawaj build stepa (webpack, vite)
+Nie dodawaj autentykacji
+Nie słuchaj na 0.0.0.0
+Nie modyfikuj istniejących modułów
+(ksef client, file manager, index tracker)
+
+Zamiast tego:
+$ npx tsx src/index.ts sync --from 2024-01-01 --to 2024-01-31
+⬇️ Pobieram: [████████░░░░░░░░] 15/35 (43%)
+
+Użytkownik zobaczy to:
+$ npx tsx src/index.ts
+🧾 KSeF Sync działa na http://localhost:3000
+
+otwiera się przeglądarka z ładnym dashboardem
+klika "Synchronizuj"
+widzi progress bar
+pobiera pliki jednym klikiem
