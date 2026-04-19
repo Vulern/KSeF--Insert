@@ -1,40 +1,51 @@
 /**
  * Main entry point / CLI
+ * Orchestrates KSeF-Insert integration with full CLI support
  */
 
+import { Command } from 'commander';
 import { logger } from './logger.js';
 import { config } from './config.js';
 import { ksefClient, KsefClient, KsefAuth, createAuth } from './ksef/index.js';
 import { InvoiceFileManager } from './storage/index.js';
+import { setupCli } from './cli/index.js';
+import { printHeader, printError, emojis } from './cli/formatter.js';
 
 const main = async (): Promise<void> => {
-  logger.info('Starting KSeF-Insert Integration');
-  logger.info(`Config loaded:`, {
-    ksefBaseUrl: config.ksef.baseUrl,
-    insertOutputDir: config.insert.outputDir,
-  });
+  try {
+    // Initialize CLI
+    const program = new Command();
+    program
+      .name('ksef-sync')
+      .description('KSeF Invoice Synchronization Tool')
+      .version('0.1.0');
 
-  // Initialize file manager for invoice storage
-  const fileManager = new InvoiceFileManager({ outputDir: config.insert.outputDir });
-  await fileManager.initialize();
+    // Set up all CLI commands
+    setupCli(program);
 
-  // TODO: Implement main CLI logic
-  // - Parse command line arguments
-  // - Handle subcommands (sync, export, auth, etc.)
-  // - Orchestrate the workflow
-  //
-  // Example usage:
-  // const auth = createAuth(ksefClient);
-  // const sessionInfo = await auth.authenticate(config.ksef.nip!, config.ksef.token!);
-  // const invoices = await ksefClient.queryInvoices({ pageSize: 100 });
-  // await fileManager.saveBatch(invoices);
+    // If no args, show help
+    if (process.argv.length <= 2) {
+      program.help();
+      process.exit(0);
+    }
+
+    // Parse command line arguments
+    await program.parseAsync(process.argv);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.error('Fatal error', error);
+    console.error(`${emojis.error} ${message}`);
+    process.exit(1);
+  }
 };
 
+// Run CLI
 main().catch((error) => {
-  logger.error('Fatal error', error);
+  logger.error('Startup error', error);
   process.exit(1);
 });
 
+// Exports for library use
 export { ksefClient, KsefClient, KsefAuth, createAuth };
 export * from './errors.js';
 export * from './config.js';
