@@ -229,15 +229,6 @@ LOG_LEVEL=debug npm start -- sync --from 2024-01-01 --to 2024-01-31
 - [Ministerstwo Finansów - KSeF](https://www.mf.gov.pl/ksef)
 - [FA(2) Schema Spec](https://www.mf.gov.pl)
 
-## 🤝 Wkład w projekt
-
-Zapraszamy do contributu! Proszę:
-1. Fork projekt
-2. Utwórz feature branch
-3. Commituj zmiany
-4. Push do branch
-5. Otwórz Pull Request
-
 ## 📋 Licencja
 
 MIT License - zobacz [LICENSE](LICENSE) dla szczegółów
@@ -249,11 +240,3 @@ MIT License - zobacz [LICENSE](LICENSE) dla szczegółów
 - 📖 [Instrukcja użytkownika](docs/instrukcja-uzytkownika.md) - odpowiedzi na pytania
 - 🛠️ [Instrukcja techniczna](docs/instrukcja-techniczna.md) - dla administratorów IT
 - 🔌 [API Docs](docs/ksef-api.md) - szczegóły techniczne
-
----
-
-**Wersja**: 1.0.0  
-**Ostatnia aktualizacja**: Styczeń 2024  
-**Status**: Production Ready ✅
-
-Made with ❤️ for Polish businesses
