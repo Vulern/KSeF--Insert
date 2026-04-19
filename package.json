@@ -34,6 +34,7 @@
     "csv-stringify": "^6.4.0",
     "fast-xml-parser": "^4.3.0",
     "iconv-lite": "^0.6.3",
+    "libxmljs2": "^0.37.0",
     "ora": "^9.3.0",
     "pino": "^8.17.0",
     "zod": "^3.22.0"
