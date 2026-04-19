@@ -10,9 +10,18 @@ import { ksefClient, KsefClient, KsefAuth, createAuth } from './ksef/index.js';
 import { InvoiceFileManager } from './storage/index.js';
 import { setupCli } from './cli/index.js';
 import { printHeader, printError, emojis } from './cli/formatter.js';
+import { startWebServer } from './server/server.js';
 
 const main = async (): Promise<void> => {
   try {
+    // Check if first arg is 'ui'
+    const firstArg = process.argv[2];
+    if (!firstArg || firstArg === 'ui') {
+      // Start web UI
+      await startWebServer();
+      return;
+    }
+
     // Initialize CLI
     const program = new Command();
     program

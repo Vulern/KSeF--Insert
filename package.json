@@ -28,13 +28,16 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "@hono/node-server": "^1.19.14",
     "axios": "^1.6.0",
     "chalk": "^5.6.2",
     "commander": "^14.0.3",
     "csv-stringify": "^6.4.0",
     "fast-xml-parser": "^4.3.0",
+    "hono": "^4.12.14",
     "iconv-lite": "^0.6.3",
     "libxmljs2": "^0.37.0",
+    "open": "^11.0.0",
     "ora": "^9.3.0",
     "pino": "^8.17.0",
     "zod": "^3.22.0"

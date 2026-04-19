@@ -1,164 +1,247 @@
-text
-
-
----
-
-### Prompt 5: Dokumentacja + walidacja XSD
-
-```markdown
 ## Kontekst projektu
-Narzędzie CLI do pobierania e-faktur z KSeF (TypeScript).
-Wszystko działa:
-- ✅ KSeF Client
-- ✅ File Manager + Index Tracker
-- ✅ CLI (sync, list, status, get)
-Teraz: dokumentacja po polsku + walidator XSD.
+Mam działające narzędzie KSeF Sync z lokalnym Web UI.
+Stack:
+- Node.js + TypeScript
+- Hono jako lokalny serwer HTTP
+- statyczne pliki HTML/CSS/JS (bez React, bez Vite, bez build stepa)
+- UI działa na localhost:3000
 
-## Pliki do przeczytania
-- Wszystkie pliki w `src/`
-- `README.md`
+Aktualnie UI jest zbyt surowe:
+- wygląda prawie jak sam tekst HTML
+- wszystko jest przyklejone do lewej strony
+- brak sensownego layoutu, kart, spacingu i hierarchii wizualnej
+- możliwe, że CSS nie jest poprawnie ładowany lub nie jest poprawnie serwowany
 
 ## Cel zadania
-1. Walidator XML vs schemat FA(2)
-2. Kompletna dokumentacja
+Popraw istniejący Web UI tak, żeby wyglądał nowocześnie, czytelnie i “jak prawdziwa aplikacja”, ale nadal był prosty i lekki.
 
----
+Chcę:
+1. sprawdzić i naprawić ładowanie CSS/JS jeśli jest błędne
+2. przeprojektować layout i styl strony
+3. zachować obecną funkcjonalność backendu i endpointów API
+4. nie dodawać żadnych frameworków frontendowych
 
-### Część 1: Walidator XML
+## Najpierw przeczytaj i przeanalizuj
+- `src/server/app.ts`
+- `src/server/server.ts`
+- `src/ui/index.html`
+- `src/ui/style.css`
+- `src/ui/app.js`
 
-## Plik: `src/validator/xml-validator.ts`
+## Ważne
+Najpierw sprawdź czy:
+- pliki statyczne HTML/CSS/JS są poprawnie serwowane przez Hono
+- `index.html` faktycznie ładuje `style.css` i `app.js` poprawnymi ścieżkami
+- po wejściu na stronę CSS naprawdę działa
+Jeśli trzeba, popraw routing / middleware statycznych plików, ale bez zmiany API biznesowego.
 
-```typescript
-class InvoiceXMLValidator {
-  constructor(xsdPath: string)  // ścieżka do FA(2).xsd
-  
-  // Waliduj pojedynczy plik
-  async validate(xmlPath: string): Promise<ValidationResult>
-  // → { valid: boolean, errors: ValidationError[] }
-  
-  // Waliduj folder
-  async validateDir(dirPath: string): Promise<BatchValidationResult>
-  // → { total, valid, invalid, results[] }
-}
-Użyj biblioteki libxmljs2 (obsługuje XSD validation)
-lub alternatywnie xsd-schema-validator.
+## Zakres zmian
+Skup się głównie na:
+- `src/ui/index.html`
+- `src/ui/style.css`
+- `src/ui/app.js`
 
-Output walidacji:
+Możesz też minimalnie poprawić:
+- `src/server/app.ts`
+- `src/server/server.ts`
+jeśli to konieczne do poprawnego serwowania statycznych plików.
 
-text
+## Oczekiwany efekt wizualny
+Chcę estetyczny dashboard desktopowy:
+- wycentrowany kontener
+- szerokość max około 1100–1200px
+- ciemny motyw
+- nowoczesne karty/panele
+- sensowny spacing
+- lepsza typografia
+- czytelne formularze
+- ładna tabela faktur
+- estetyczny progress bar
+- badge statusu
+- przyciski primary/secondary
+- puste stany i komunikaty błędów
+- UI ma wyglądać schludnie i profesjonalnie, nie “developersko surowo”
 
-🔍 Walidacja XML vs schemat FA(2)
-──────────────────────────────────
- ✅ 2024-01-05_521..._ref123.xml
- ✅ 2024-01-12_789..._ref987.xml
- ❌ 2024-01-15_111..._ref555.xml
-    → Linia 23: Element 'P_1' - wymagany ale brak wartości
-    → Linia 45: Element 'NIP' - wartość '123' nie spełnia wzorca
+## Styl wizualny
+### Motyw
+Dark mode:
+- tło strony: bardzo ciemne, np. `#0b1020` lub `#0f172a`
+- karty: `#111827` / `#162033`
+- obramowania: subtelne, np. `rgba(255,255,255,0.08)`
+- tekst główny: `#e5e7eb`
+- tekst poboczny: `#94a3b8`
+- akcent primary: `#3b82f6`
+- success: `#22c55e`
+- warning: `#f59e0b`
+- error: `#ef4444`
 
- Wynik: 2/3 poprawne
-Część 2: Dokumentacja
-Plik: docs/instrukcja-uzytkownika.md
-Dla księgowego (osoba nietechniczna):
+### Typografia
+- font: system-ui, sans-serif
+- wyraźny nagłówek strony
+- lepsze odstępy między sekcjami
+- hierarchia nagłówków: h1, h2, label, helper text
 
-Co robi program (2 zdania)
-Wymagania:
-Komputer z Windows/Mac/Linux
-Node.js 20+ (link do pobrania + jak zainstalować)
-Token KSeF (jak uzyskać w MF)
-NIP firmy
-Instalacja (krok po kroku, z przykładami komend)
-Konfiguracja .env:
-Skąd wziąć token KSeF
-(link do strony MF + kroki)
-Jaki NIP wpisać
-Środowisko test vs produkcja
-Pierwsze uruchomienie:
-text
+### Layout
+Strona ma być zbudowana z sekcji:
+1. **Header**
+   - nazwa aplikacji: `KSeF Sync`
+   - krótki opis
+   - badge statusu połączenia / środowiska
+2. **Stat cards**
+   - środowisko
+   - ostatnia synchronizacja
+   - liczba pobranych faktur
+   - katalog docelowy
+3. **Sekcja synchronizacji**
+   - pola daty od/do
+   - wybór typu faktur
+   - duży przycisk “Synchronizuj”
+   - progress bar
+   - tekst statusu pod progress barem
+4. **Sekcja pobranych faktur**
+   - nagłówek sekcji
+   - filtr miesiąca
+   - tabela
+   - licznik rekordów
+5. **Sekcja diagnostyki / statusu**
+   - podstawowe informacje o systemie
+   - ostatnie zdarzenia lub komunikaty
+6. **Footer**
+   - wersja
+   - środowisko
+   - linki tekstowe lub krótka informacja
 
-npx tsx src/index.ts sync --from 2024-01-01 --to 2024-01-31
-Gdzie są pobrane pliki:
-Struktura folderów
-Jak otworzyć XML w Insert
-Codzienne użycie:
-Poranna synchronizacja
-Sprawdzanie statusu
-Rozwiązywanie problemów:
-"Błąd autoryzacji" → token wygasł
-"Timeout" → problemy z serwerem KSeF
-"0 faktur" → sprawdź zakres dat i typ
-"Plik XML nie otwiera się w Insert" → sprawdź wersję
-Plik: docs/instrukcja-techniczna.md
-Dla developera:
+## Konkretny układ
+### Górna część
+- Header w jednej linii:
+  - po lewej: tytuł i subtitle
+  - po prawej: badge statusu, np. `Test`, `Połączono`, `Lokalnie`
+- pod headerem siatka 4 kart statystycznych
 
-Architektura (diagram Mermaid):
-mermaid
+### Środkowa część
+- sekcja synchronizacji jako duża karta
+- formularz w układzie grid:
+  - data od
+  - data do
+  - typ
+  - przycisk synchronizacji
+- pod formularzem pasek postępu i komunikat statusu
 
-flowchart TD
-  CLI[CLI - commander.js] --> Client[KSeF Client]
-  CLI --> FM[File Manager]
-  CLI --> Val[XML Validator]
-  Client --> Auth[Auth Module]
-  Client --> API[KSeF REST API]
-  FM --> IDX[Index Tracker]
-  FM --> Disk[System plików]
-  Val --> XSD[Schemat FA-2 XSD]
-Opis modułów
-Jak dodać nową komendę CLI
-Jak zmienić strukturę folderów
-Testy: jak uruchomić, jak dodać nowe
-CI/CD: jak zautomatyzować
-Znane ograniczenia
-Plik: docs/ksef-api.md
-Skrócona dokumentacja API KSeF:
+### Dolna część
+- duża karta z tabelą faktur
+- nagłówek karty + filtr miesiąca + przycisk odśwież
+- tabela z:
+  - Data
+  - NIP
+  - Nr KSeF
+  - Plik
+  - Akcja
+- akcja jako estetyczny przycisk “Pobierz”
 
-Środowiska + URL-e
-Autentykacja (flow)
-Endpointy (request/response examples)
-Kody błędów KSeF
-Rate limits
-Schemat FA(2) - opis najważniejszych pól
-Plik: docs/changelog.md
-v1.0.0 - Pierwsza wersja
-Pobieranie faktur zakupowych i sprzedażowych
-Zapis XML na dysk
-Śledzenie duplikatów
-Walidacja vs schemat FA(2)
-CLI z komendami: sync, list, status, get, validate
-Część 3: Finalne README.md
-Markdown
+### Dodatkowo
+- sekcja diagnostyczna w postaci mniejszej karty pod tabelą
+- pokazuj np.:
+  - środowisko
+  - katalog wyjściowy
+  - liczba faktur
+  - ostatni błąd / ostatnie zdarzenie
 
-# 🧾 KSeF Sync - Pobieranie e-faktur z KSeF
+## UX / interakcje
+- przycisk synchronizacji ma stany:
+  - normalny
+  - loading
+  - disabled
+- podczas synchronizacji:
+  - progress bar animowany
+  - przycisk disabled
+  - komunikat np. `Pobieram fakturę 12 z 47...`
+- po zakończeniu:
+  - pokaż estetyczny komunikat sukcesu
+- po błędzie:
+  - pokaż estetyczny komunikat błędu
+- dodaj prosty system toastów / alertów w vanilla JS
+- puste stany:
+  - jeśli brak faktur, pokaż kartę / wiersz z informacją:
+    `Brak pobranych faktur dla wybranego miesiąca`
 
-Narzędzie CLI do automatycznego pobierania e-faktur
-z Krajowego Systemu e-Faktur (KSeF) i zapisywania
-jako pliki XML gotowe do otwarcia w programie Insert.
+## Wymagania techniczne
+- bez React/Vue/Svelte
+- bez Tailwind
+- bez build stepa
+- czysty HTML/CSS/JS
+- zachowaj istniejące endpointy API
+- nie zmieniaj logiki biznesowej synchronizacji
+- możesz uporządkować markup HTML i klasy CSS
+- użyj CSS Grid + Flexbox
+- użyj CSS variables (`:root`) dla kolorów i spacingu
+- dodaj:
+  - hover states
+  - focus states
+  - transitions
+  - radiusy
+  - cienie kart
+- desktop-first, ale niech nie rozsypuje się przy mniejszym oknie
 
-## Quick Start
-1. `git clone ...`
-2. `pnpm install`
-3. `cp .env.example .env` → uzupełnij token i NIP
-4. `pnpm run sync -- --from 2024-01-01 --to 2024-01-31`
-5. Pliki XML w `./output/faktury/`
+## Bardzo ważne: jakość frontendu
+Nie chcę “minimalnego MVP”.
+Chcę nadal prosty frontend, ale wizualnie dopracowany:
+- schludny
+- czytelny
+- z nowoczesnym spacingiem
+- z kartami
+- z siatką
+- z sensowną tabelą
+- z estetycznymi formularzami i przyciskami
 
-## Komendy
-...
+## Style które chcę zobaczyć
+Dodaj w CSS m.in.:
+- global reset / box-sizing
+- `body` z tłem gradientowym lub subtelnym tłem
+- `.app-shell` lub `.container` z max-width i centrowaniem
+- `.card`
+- `.stats-grid`
+- `.form-grid`
+- `.table-wrapper`
+- `.badge`
+- `.btn`, `.btn-primary`, `.btn-secondary`
+- `.progress`, `.progress-bar`
+- `.toast-container`, `.toast`
+- `.empty-state`
+- `.status-dot`
 
-## Dokumentacja
-- [Instrukcja użytkownika](docs/instrukcja-uzytkownika.md)
-- [Instrukcja techniczna](docs/instrukcja-techniczna.md)
-- [API KSeF](docs/ksef-api.md)
+## Tabela
+Tabela ma wyglądać profesjonalnie:
+- sticky header mile widziany
+- lepszy padding komórek
+- zebra rows
+- hover na wierszu
+- skrócone długie referencje KSeF z możliwością title/tooltip
+- kolumna akcji wyrównana ładnie do prawej
 
-## Licencja
-MIT
-Testy walidatora
-Plik: tests/validator/xml-validator.test.ts
+## Formularze
+Form controls mają być estetyczne:
+- dark inputs
+- obramowanie
+- focus ring
+- labels nad polami
+- helper text jeśli potrzebne
+- radio group / select ma być czytelne
 
-Poprawny XML FA(2) → valid: true
-Brakujące pole wymagane → valid: false + czytelny błąd
-Niepoprawny NIP → błąd walidacji
-Plik nie-XML → obsłużony error
-Walidacja folderu z 5 plikami (3 ok, 2 błędne)
-Nie rób
-Nie modyfikuj istniejącego kodu w src/
-(chyba że znajdziesz buga)
-Nie zmieniaj istniejących testów
+## Jeśli obecna struktura HTML jest zbyt słaba
+Możesz ją przebudować, ale:
+- zachowaj istniejące funkcje w `app.js`
+- albo zrefaktoruj `app.js` tak, żeby działał z nowym markupem
+- nie usuwaj obecnych funkcjonalności
+
+## Oczekiwany rezultat
+Po zakończeniu chcę mieć:
+1. dopracowany wizualnie dashboard
+2. poprawnie ładowany CSS i JS
+3. zachowaną obecną funkcjonalność
+4. kod frontendu bardziej uporządkowany i łatwiejszy w maintenance
+
+## Na koniec
+Po wdrożeniu:
+- opisz krótko co zostało poprawione
+- wypisz, czy problem z ładowaniem CSS/JS istniał i jak został naprawiony
+- podaj, które pliki zostały zmienione
