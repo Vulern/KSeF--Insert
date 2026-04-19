@@ -3,147 +3,228 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>🧾 KSeF Sync - Dashboard</title>
+  <title>KSeF Sync - Dashboard</title>
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <div class="container">
+  <div id="toastContainer" class="toast-container"></div>
+  
+  <div class="app-shell">
     <!-- Header -->
-    <header class="header">
-      <div class="header-left">
-        <h1>🧾 KSeF Sync</h1>
-      </div>
-      <div class="header-right">
-        <div class="status-indicator">
-          <span id="statusDot" class="dot connected"></span>
-          <span id="statusText">Sprawdzam...</span>
+    <header class="app-header">
+      <div class="header-content">
+        <div class="header-brand">
+          <h1 class="app-title">🧾 KSeF Sync</h1>
+          <p class="app-subtitle">Synchronizacja faktur z systemu KSeF</p>
+        </div>
+        <div class="header-status">
+          <div class="status-badge">
+            <span id="statusDot" class="status-dot connected"></span>
+            <span id="statusText" class="status-label">Sprawdzam...</span>
+          </div>
         </div>
       </div>
     </header>
 
     <!-- Main Content -->
-    <main class="main">
+    <main class="app-main">
+      <!-- Stats Grid -->
+      <section class="stats-grid">
+        <div class="stat-card">
+          <div class="stat-icon">🌍</div>
+          <div class="stat-content">
+            <div class="stat-label">Środowisko</div>
+            <div id="statEnv" class="stat-value">-</div>
+          </div>
+        </div>
+
+        <div class="stat-card">
+          <div class="stat-icon">🕐</div>
+          <div class="stat-content">
+            <div class="stat-label">Ostatnia synch</div>
+            <div id="statLastSync" class="stat-value">Nigdy</div>
+          </div>
+        </div>
+
+        <div class="stat-card">
+          <div class="stat-icon">📊</div>
+          <div class="stat-content">
+            <div class="stat-label">Pobrane faktury</div>
+            <div id="statTotal" class="stat-value">0</div>
+          </div>
+        </div>
+
+        <div class="stat-card">
+          <div class="stat-icon">📁</div>
+          <div class="stat-content">
+            <div class="stat-label">Katalog</div>
+            <div id="statFolder" class="stat-value-compact" title="">...</div>
+          </div>
+        </div>
+      </section>
+
       <!-- Sync Section -->
-      <section class="card sync-section">
-        <h2>⬇️ Synchronizacja</h2>
-
-        <div class="form-group">
-          <label for="dateFrom">Od:</label>
-          <input type="date" id="dateFrom" value="2024-01-01" />
+      <section class="section-card">
+        <div class="section-header">
+          <h2 class="section-title">📥 Synchronizuj faktury</h2>
+          <p class="section-description">Pobierz faktury z wybranego okresu</p>
         </div>
 
-        <div class="form-group">
-          <label for="dateTo">Do:</label>
-          <input type="date" id="dateTo" />
-        </div>
+        <div class="form-container">
+          <div class="form-grid">
+            <div class="form-group">
+              <label for="dateFrom" class="form-label">Data od</label>
+              <input type="date" id="dateFrom" class="form-input" value="2024-01-01" />
+            </div>
 
-        <div class="form-group">
-          <label>Typ faktur:</label>
-          <div class="radio-group">
-            <label>
-              <input type="radio" name="invoiceType" value="zakup" checked /> Zakup
-            </label>
-            <label>
-              <input type="radio" name="invoiceType" value="sprzedaz" /> Sprzedaż
-            </label>
-            <label>
-              <input type="radio" name="invoiceType" value="wszystkie" /> Oba
-            </label>
+            <div class="form-group">
+              <label for="dateTo" class="form-label">Data do</label>
+              <input type="date" id="dateTo" class="form-input" />
+            </div>
+
+            <div class="form-group">
+              <label class="form-label">Typ faktur</label>
+              <div class="radio-group">
+                <label class="radio-label">
+                  <input type="radio" name="invoiceType" value="zakup" checked class="radio-input" />
+                  <span>Faktury zakupu</span>
+                </label>
+                <label class="radio-label">
+                  <input type="radio" name="invoiceType" value="sprzedaz" class="radio-input" />
+                  <span>Faktury sprzedaży</span>
+                </label>
+                <label class="radio-label">
+                  <input type="radio" name="invoiceType" value="wszystkie" class="radio-input" />
+                  <span>Oba typy</span>
+                </label>
+              </div>
+            </div>
+
+            <div class="form-group full-width">
+              <button id="syncButton" class="btn btn-primary btn-large">
+                <span class="btn-icon">🔄</span>
+                <span class="btn-text">Synchronizuj teraz</span>
+              </button>
+            </div>
           </div>
         </div>
 
-        <div class="sync-button-group">
-          <button id="syncButton" class="btn btn-primary">🔄 Synchronizuj</button>
-        </div>
-
-        <div id="progressContainer" class="progress-container hidden">
-          <div class="progress-bar">
-            <div id="progressFill" class="progress-fill"></div>
+        <!-- Progress -->
+        <div id="progressContainer" class="progress-section hidden">
+          <div class="progress-wrapper">
+            <div class="progress-bar">
+              <div id="progressFill" class="progress-fill"></div>
+            </div>
+            <p id="progressText" class="progress-text">Inicjowanie synchronizacji...</p>
           </div>
-          <p id="progressText">Pobieranie faktur...</p>
         </div>
 
-        <div id="syncResult" class="result hidden">
-          <p><strong>Pobrano:</strong> <span id="resultDownloaded">0</span></p>
-          <p><strong>Pominięto:</strong> <span id="resultSkipped">0</span></p>
-          <p><strong>Błędy:</strong> <span id="resultErrors">0</span></p>
+        <!-- Result -->
+        <div id="syncResult" class="result-section hidden">
+          <div class="result-header">✅ Synchronizacja zakończona</div>
+          <div class="result-grid">
+            <div class="result-item">
+              <div class="result-label">Pobrano</div>
+              <div class="result-number downloaded"><span id="resultDownloaded">0</span></div>
+            </div>
+            <div class="result-item">
+              <div class="result-label">Pominięto</div>
+              <div class="result-number skipped"><span id="resultSkipped">0</span></div>
+            </div>
+            <div class="result-item">
+              <div class="result-label">Błędy</div>
+              <div class="result-number error"><span id="resultErrors">0</span></div>
+            </div>
+          </div>
         </div>
       </section>
 
       <!-- Invoices Section -->
-      <section class="card invoices-section">
-        <h2>📋 Pobrane faktury</h2>
-
-        <div class="form-group">
-          <label for="monthSelect">Miesiąc:</label>
-          <select id="monthSelect">
-            <option value="">-- Wszystkie --</option>
-          </select>
+      <section class="section-card">
+        <div class="section-header">
+          <h2 class="section-title">📋 Pobrane faktury</h2>
+          <p class="section-description">Lista zsynchronizowanych dokumentów</p>
         </div>
 
-        <div class="invoices-table-wrapper">
-          <table class="invoices-table">
+        <div class="invoices-controls">
+          <div class="form-group">
+            <label for="monthSelect" class="form-label">Filtruj po miesiącu</label>
+            <select id="monthSelect" class="form-input">
+              <option value="">Wszystkie miesiące</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="table-wrapper">
+          <table class="data-table">
             <thead>
               <tr>
                 <th>Data</th>
                 <th>NIP</th>
                 <th>Nr KSeF</th>
-                <th></th>
+                <th class="col-actions">Akcja</th>
               </tr>
             </thead>
             <tbody id="invoicesBody">
-              <tr>
-                <td colspan="4" class="empty">Brak faktur do wyświetlenia</td>
+              <tr class="empty-row">
+                <td colspan="4" class="empty-state">Brak faktur do wyświetlenia</td>
               </tr>
             </tbody>
           </table>
         </div>
 
-        <div class="invoices-footer">
-          <p>Łącznie: <strong id="invoiceCount">0</strong> faktur</p>
+        <div class="table-footer">
+          <div class="records-count">Łącznie: <strong id="invoiceCount">0</strong> faktur(a)</div>
         </div>
       </section>
 
-      <!-- Status Section -->
-      <section class="card status-section">
-        <h2>⚙️ Status</h2>
+      <!-- Diagnostics Section -->
+      <section class="section-card diagnostics-card">
+        <div class="section-header">
+          <h2 class="section-title">⚙️ Informacje diagnostyczne</h2>
+          <p class="section-description">Szczegóły konfiguracji i stanu systemu</p>
+        </div>
 
-        <div class="status-grid">
-          <div class="status-item">
-            <span class="label">Środowisko:</span>
-            <span id="envStatus" class="value">-</span>
+        <div class="diagnostics-grid">
+          <div class="diagnostic-item">
+            <div class="diagnostic-label">NIP</div>
+            <div id="nipStatus" class="diagnostic-value">-</div>
           </div>
-          <div class="status-item">
-            <span class="label">NIP:</span>
-            <span id="nipStatus" class="value">-</span>
+          <div class="diagnostic-item">
+            <div class="diagnostic-label">Folder wyjściowy</div>
+            <div id="folderStatus" class="diagnostic-value diagnostic-value-mono" title="">-</div>
           </div>
-          <div class="status-item">
-            <span class="label">Ostatnia sync:</span>
-            <span id="lastSyncStatus" class="value">-</span>
+          <div class="diagnostic-item">
+            <div class="diagnostic-label">Wersja aplikacji</div>
+            <div class="diagnostic-value">1.0.0</div>
           </div>
-          <div class="status-item">
-            <span class="label">Łącznie faktur:</span>
-            <span id="totalStatus" class="value">-</span>
-          </div>
-          <div class="status-item">
-            <span class="label">Folder:</span>
-            <span id="folderStatus" class="value" style="word-break: break-all">-</span>
-          </div>
-          <div class="status-item">
-            <span class="label">Wersja:</span>
-            <span class="value">1.0.0</span>
+          <div class="diagnostic-item">
+            <div class="diagnostic-label">Połączenie</div>
+            <div id="connectionStatus" class="diagnostic-value">Sprawdzam...</div>
           </div>
         </div>
 
-        <div class="status-actions">
-          <button id="openFolderBtn" class="btn btn-secondary">📂 Pokaż ścieżkę</button>
+        <div class="diagnostics-actions">
+          <button id="openFolderBtn" class="btn btn-secondary">
+            <span class="btn-icon">📂</span>
+            <span class="btn-text">Otwórz folder</span>
+          </button>
         </div>
       </section>
     </main>
 
     <!-- Footer -->
-    <footer class="footer">
-      <p>KSeF Sync v1.0.0 | Środowisko: <span id="footerEnv">-</span></p>
+    <footer class="app-footer">
+      <div class="footer-content">
+        <div class="footer-info">
+          <span class="footer-text">KSeF Sync v1.0.0</span>
+          <span class="footer-divider">•</span>
+          <span class="footer-text">Środowisko: <span id="footerEnv">-</span></span>
+        </div>
+        <div class="footer-credits">
+          <span class="footer-text">Synchronizacja faktur z KSeF</span>
+        </div>
+      </div>
     </footer>
   </div>
 

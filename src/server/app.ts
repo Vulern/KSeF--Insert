@@ -46,7 +46,7 @@ export function createApp(): Hono {
 
     try {
       const filePath = resolve(uiPath, filename);
-      const content = await readFile(filePath, 'utf-8');
+      const content = await readFile(filePath); // Read as Buffer
 
       const contentTypes: Record<string, string> = {
         css: 'text/css',
@@ -60,7 +60,7 @@ export function createApp(): Hono {
       const ext = filename.split('.').pop() || 'js';
       c.header('Content-Type', contentTypes[ext] || 'text/plain');
 
-      return c.text(content);
+      return c.body(content); // Use c.body for binary/correct encoding
     } catch (error) {
       logger.warn(`Static file not found: ${filename}`);
       return c.text('Not Found', 404);

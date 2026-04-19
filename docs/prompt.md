@@ -1,236 +1,247 @@
 ## Kontekst projektu
-Mam działające narzędzie CLI do pobierania e-faktur z KSeF
-(TypeScript/Node.js). Klient API, file manager i CLI działają.
-Teraz chcę dodać prosty web UI żeby użytkownik nie musiał
-korzystać z terminala.
+Mam działające narzędzie KSeF Sync z lokalnym Web UI.
+Stack:
+- Node.js + TypeScript
+- Hono jako lokalny serwer HTTP
+- statyczne pliki HTML/CSS/JS (bez React, bez Vite, bez build stepa)
+- UI działa na localhost:3000
 
-## Pliki do przeczytania
-- `src/index.ts` → obecne CLI (commander.js)
-- `src/ksef/client.ts` → klient API KSeF
-- `src/storage/file-manager.ts` → zarządzanie plikami XML
-- `src/storage/index-tracker.ts` → śledzenie pobranych faktur
-- `src/config.ts` → konfiguracja .env
+Aktualnie UI jest zbyt surowe:
+- wygląda prawie jak sam tekst HTML
+- wszystko jest przyklejone do lewej strony
+- brak sensownego layoutu, kart, spacingu i hierarchii wizualnej
+- możliwe, że CSS nie jest poprawnie ładowany lub nie jest poprawnie serwowany
 
 ## Cel zadania
-Dodaj prosty lokalny web UI (localhost:3000).
-Użytkownik uruchamia JEDNĄ komendę i dostaje dashboard
-w przeglądarce.
+Popraw istniejący Web UI tak, żeby wyglądał nowocześnie, czytelnie i “jak prawdziwa aplikacja”, ale nadal był prosty i lekki.
 
-## Stack UI
-- Serwer: Hono (npm: hono + @hono/node-server)
-- Frontend: statyczne pliki HTML/CSS/JS (bez build stepa)
-- Styl: prosty, nowoczesny, ciemny motyw
-- Ikony: emoji (nie dodawaj bibliotek ikon)
-- Responsywność: nie wymagana (desktop only)
+Chcę:
+1. sprawdzić i naprawić ładowanie CSS/JS jeśli jest błędne
+2. przeprojektować layout i styl strony
+3. zachować obecną funkcjonalność backendu i endpointów API
+4. nie dodawać żadnych frameworków frontendowych
 
-## Struktura plików do stworzenia:
-├── src/
-│   ├── server/
-│   │   ├── app.ts           # Hono app + routes
-│   │   ├── api.ts           # REST endpointy
-│   │   └── server.ts        # startuj serwer + otwórz przeglądarkę
-│   └── ui/
-│       ├── index.html       # główna strona
-│       ├── style.css        # style
-│       └── app.js           # logika frontend (vanilla JS)
+## Najpierw przeczytaj i przeanalizuj
+- `src/server/app.ts`
+- `src/server/server.ts`
+- `src/ui/index.html`
+- `src/ui/style.css`
+- `src/ui/app.js`
 
-## API Endpointy (src/server/api.ts):
+## Ważne
+Najpierw sprawdź czy:
+- pliki statyczne HTML/CSS/JS są poprawnie serwowane przez Hono
+- `index.html` faktycznie ładuje `style.css` i `app.js` poprawnymi ścieżkami
+- po wejściu na stronę CSS naprawdę działa
+Jeśli trzeba, popraw routing / middleware statycznych plików, ale bez zmiany API biznesowego.
 
-### GET /api/status
-Zwraca aktualny status:
-```json
-{
-  "connected": false,
-  "environment": "test",
-  "nip": "5213000001",
-  "lastSync": "2024-01-15T14:30:00Z",
-  "totalInvoices": 234,
-  "outputDir": "./output/faktury"
-}
-POST /api/sync
-Rozpoczyna synchronizację:
-Body:
-{
-  "dateFrom": "2024-01-01",
-  "dateTo": "2024-01-31",
-  "type": "zakup"
-}
-Response (Server-Sent Events dla progressu):
-event: progress
-data: {"current": 5, "total": 47, "status": "Pobieram fakturę 5/47..."}
+## Zakres zmian
+Skup się głównie na:
+- `src/ui/index.html`
+- `src/ui/style.css`
+- `src/ui/app.js`
 
-event: progress  
-data: {"current": 47, "total": 47, "status": "Zapisuję pliki..."}
+Możesz też minimalnie poprawić:
+- `src/server/app.ts`
+- `src/server/server.ts`
+jeśli to konieczne do poprawnego serwowania statycznych plików.
 
-event: done
-data: {"downloaded": 35, "skipped": 12, "errors": 0}
+## Oczekiwany efekt wizualny
+Chcę estetyczny dashboard desktopowy:
+- wycentrowany kontener
+- szerokość max około 1100–1200px
+- ciemny motyw
+- nowoczesne karty/panele
+- sensowny spacing
+- lepsza typografia
+- czytelne formularze
+- ładna tabela faktur
+- estetyczny progress bar
+- badge statusu
+- przyciski primary/secondary
+- puste stany i komunikaty błędów
+- UI ma wyglądać schludnie i profesjonalnie, nie “developersko surowo”
 
-GET /api/invoices?month=2024-01&type=zakup
-Lista pobranych faktur:
-{
-  "invoices": [
-    {
-      "ksefRef": "ref123",
-      "date": "2024-01-05",
-      "nip": "5213000001",
-      "fileName": "2024-01-05_521..._ref123.xml",
-      "filePath": "./output/faktury/2024-01/zakup/..."
-    }
-  ],
-  "total": 35
-}
-GET /api/invoices/:ksefRef/download
-Pobierz konkretny plik XML (Content-Disposition: attachment).
+## Styl wizualny
+### Motyw
+Dark mode:
+- tło strony: bardzo ciemne, np. `#0b1020` lub `#0f172a`
+- karty: `#111827` / `#162033`
+- obramowania: subtelne, np. `rgba(255,255,255,0.08)`
+- tekst główny: `#e5e7eb`
+- tekst poboczny: `#94a3b8`
+- akcent primary: `#3b82f6`
+- success: `#22c55e`
+- warning: `#f59e0b`
+- error: `#ef4444`
 
-POST /api/validate
-Waliduj pobrane XML-e:
-Body: { "month": "2024-01" }
-Response: { "total": 35, "valid": 33, "invalid": 2, "errors": [...] }
+### Typografia
+- font: system-ui, sans-serif
+- wyraźny nagłówek strony
+- lepsze odstępy między sekcjami
+- hierarchia nagłówków: h1, h2, label, helper text
 
-GET /api/config
-Zwraca aktualną konfigurację (bez tokenów!):
-{
-  "environment": "test",
-  "nip": "5213****01",
-  "outputDir": "./output/faktury",
-  "baseUrl": "https://ksef-test.mf.gov.pl/api"
-}
+### Layout
+Strona ma być zbudowana z sekcji:
+1. **Header**
+   - nazwa aplikacji: `KSeF Sync`
+   - krótki opis
+   - badge statusu połączenia / środowiska
+2. **Stat cards**
+   - środowisko
+   - ostatnia synchronizacja
+   - liczba pobranych faktur
+   - katalog docelowy
+3. **Sekcja synchronizacji**
+   - pola daty od/do
+   - wybór typu faktur
+   - duży przycisk “Synchronizuj”
+   - progress bar
+   - tekst statusu pod progress barem
+4. **Sekcja pobranych faktur**
+   - nagłówek sekcji
+   - filtr miesiąca
+   - tabela
+   - licznik rekordów
+5. **Sekcja diagnostyki / statusu**
+   - podstawowe informacje o systemie
+   - ostatnie zdarzenia lub komunikaty
+6. **Footer**
+   - wersja
+   - środowisko
+   - linki tekstowe lub krótka informacja
 
-Frontend (src/ui/index.html):
-Layout:
-┌──────────────────────────────────────────────────┐
-│  🧾 KSeF Sync                    ● Połączono     │
-├──────────────────────────────────────────────────┤
-│                                                   │
-│  ┌─ Synchronizacja ────────────────────────────┐ │
-│  │                                              │ │
-│  │  Od: [2024-01-01]  Do: [2024-01-31]         │ │
-│  │                                              │ │
-│  │  Typ: (●) Zakup  ( ) Sprzedaż  ( ) Oba     │ │
-│  │                                              │ │
-│  │  [ 🔄 Synchronizuj ]                        │ │
-│  │                                              │ │
-│  │  ████████████░░░░░░░░ 24/47 (51%)           │ │
-│  │  Pobieram fakturę 24/47...                   │ │
-│  │                                              │ │
-│  └──────────────────────────────────────────────┘ │
-│                                                   │
-│  ┌─ Pobrane faktury ──────────────────────────┐  │
-│  │                                              │ │
-│  │  Miesiąc: [Styczeń 2024 ▼]                  │ │
-│  │                                              │ │
-│  │  Data       NIP          Nr KSeF      📥    │ │
-│  │  2024-01-05 5213000001   ref123...    [⬇]   │ │
-│  │  2024-01-12 7891234567   ref456...    [⬇]   │ │
-│  │  2024-01-15 1112223334   ref789...    [⬇]   │ │
-│  │  ...                                         │ │
-│  │                                              │ │
-│  │  Łącznie: 35 faktur                          │ │
-│  │                                              │ │
-│  └──────────────────────────────────────────────┘ │
-│                                                   │
-│  ┌─ Status ───────────────────────────────────┐  │
-│  │  Środowisko:    test                        │ │
-│  │  NIP:           5213****01                  │ │
-│  │  Ostatnia sync: 2024-01-15 14:30            │ │
-│  │  Łącznie:       234 faktury                 │ │
-│  │  Folder:        ./output/faktury/           │ │
-│  │  [ 📂 Otwórz folder ]                      │ │
-│  └──────────────────────────────────────────────┘ │
-│                                                   │
-├──────────────────────────────────────────────────┤
-│  KSeF Sync v1.0.0 | Środowisko: test            │
-└──────────────────────────────────────────────────┘
+## Konkretny układ
+### Górna część
+- Header w jednej linii:
+  - po lewej: tytuł i subtitle
+  - po prawej: badge statusu, np. `Test`, `Połączono`, `Lokalnie`
+- pod headerem siatka 4 kart statystycznych
 
-Interakcje:
-Po załadowaniu strony → fetch /api/status → pokaż dane
+### Środkowa część
+- sekcja synchronizacji jako duża karta
+- formularz w układzie grid:
+  - data od
+  - data do
+  - typ
+  - przycisk synchronizacji
+- pod formularzem pasek postępu i komunikat statusu
 
-Klik "Synchronizuj":
-Disable przycisk
-Pokaż progress bar
-EventSource na /api/sync (SSE)
-Po zakończeniu → odśwież listę faktur
-Pokaż podsumowanie (toast/alert)
+### Dolna część
+- duża karta z tabelą faktur
+- nagłówek karty + filtr miesiąca + przycisk odśwież
+- tabela z:
+  - Data
+  - NIP
+  - Nr KSeF
+  - Plik
+  - Akcja
+- akcja jako estetyczny przycisk “Pobierz”
 
-Zmiana miesiąca → fetch /api/invoices?month=...
+### Dodatkowo
+- sekcja diagnostyczna w postaci mniejszej karty pod tabelą
+- pokazuj np.:
+  - środowisko
+  - katalog wyjściowy
+  - liczba faktur
+  - ostatni błąd / ostatnie zdarzenie
 
-Klik ⬇ przy fakturze → pobierz XML
+## UX / interakcje
+- przycisk synchronizacji ma stany:
+  - normalny
+  - loading
+  - disabled
+- podczas synchronizacji:
+  - progress bar animowany
+  - przycisk disabled
+  - komunikat np. `Pobieram fakturę 12 z 47...`
+- po zakończeniu:
+  - pokaż estetyczny komunikat sukcesu
+- po błędzie:
+  - pokaż estetyczny komunikat błędu
+- dodaj prosty system toastów / alertów w vanilla JS
+- puste stany:
+  - jeśli brak faktur, pokaż kartę / wiersz z informacją:
+    `Brak pobranych faktur dla wybranego miesiąca`
 
-Klik "Otwórz folder" → informacja ze ścieżką
-(nie możemy otworzyć folderu z przeglądarki)
+## Wymagania techniczne
+- bez React/Vue/Svelte
+- bez Tailwind
+- bez build stepa
+- czysty HTML/CSS/JS
+- zachowaj istniejące endpointy API
+- nie zmieniaj logiki biznesowej synchronizacji
+- możesz uporządkować markup HTML i klasy CSS
+- użyj CSS Grid + Flexbox
+- użyj CSS variables (`:root`) dla kolorów i spacingu
+- dodaj:
+  - hover states
+  - focus states
+  - transitions
+  - radiusy
+  - cienie kart
+- desktop-first, ale niech nie rozsypuje się przy mniejszym oknie
 
-Styl CSS (src/ui/style.css):
-Ciemny motyw (dark mode)
-Background: #1a1a2e lub #0f0f1a
-Karty: #16213e
-Akcent: #0ea5e9 (niebieski)
-Tekst: #e2e8f0
-Sukces: #22c55e
-Błąd: #ef4444
-Font: system-ui
-Border-radius: 8px
-Padding karty: 20px
-Max-width: 900px, wycentrowane
-Tabela: zebra striping
+## Bardzo ważne: jakość frontendu
+Nie chcę “minimalnego MVP”.
+Chcę nadal prosty frontend, ale wizualnie dopracowany:
+- schludny
+- czytelny
+- z nowoczesnym spacingiem
+- z kartami
+- z siatką
+- z sensowną tabelą
+- z estetycznymi formularzami i przyciskami
 
-Server startup (src/server/server.ts):
-// 1. Startuj Hono na porcie 3000
-// 2. Serwuj statyczne pliki z src/ui/
-// 3. Automatycznie otwórz przeglądarkę (open npm package)
-// 4. Log: "🧾 KSeF Sync działa na http://localhost:3000"
+## Style które chcę zobaczyć
+Dodaj w CSS m.in.:
+- global reset / box-sizing
+- `body` z tłem gradientowym lub subtelnym tłem
+- `.app-shell` lub `.container` z max-width i centrowaniem
+- `.card`
+- `.stats-grid`
+- `.form-grid`
+- `.table-wrapper`
+- `.badge`
+- `.btn`, `.btn-primary`, `.btn-secondary`
+- `.progress`, `.progress-bar`
+- `.toast-container`, `.toast`
+- `.empty-state`
+- `.status-dot`
 
-Zmodyfikuj src/index.ts:
-Dodaj komendę:
-# Uruchom web UI (domyślna komenda)
-npx tsx src/index.ts
+## Tabela
+Tabela ma wyglądać profesjonalnie:
+- sticky header mile widziany
+- lepszy padding komórek
+- zebra rows
+- hover na wierszu
+- skrócone długie referencje KSeF z możliwością title/tooltip
+- kolumna akcji wyrównana ładnie do prawej
 
-# Lub jawnie
-npx tsx src/index.ts ui
+## Formularze
+Form controls mają być estetyczne:
+- dark inputs
+- obramowanie
+- focus ring
+- labels nad polami
+- helper text jeśli potrzebne
+- radio group / select ma być czytelne
 
-# Stare komendy CLI nadal działają
-npx tsx src/index.ts sync --from 2024-01-01 --to 2024-01-31
+## Jeśli obecna struktura HTML jest zbyt słaba
+Możesz ją przebudować, ale:
+- zachowaj istniejące funkcje w `app.js`
+- albo zrefaktoruj `app.js` tak, żeby działał z nowym markupem
+- nie usuwaj obecnych funkcjonalności
 
-Wymagania:
-Zero build stepa dla frontendu (vanilla JS)
-Serwer i frontend w jednym procesie
-SSE (Server-Sent Events) dla progressu sync
-Automatyczne otwarcie przeglądarki po starcie
-Graceful shutdown (Ctrl+C → zamknij serwer)
-Brak autentykacji (localhost only)
-Zabezpiecz: serwer nasłuchuje TYLKO na 127.0.0.1
-(nie 0.0.0.0 - żeby nie był widoczny w sieci)
+## Oczekiwany rezultat
+Po zakończeniu chcę mieć:
+1. dopracowany wizualnie dashboard
+2. poprawnie ładowany CSS i JS
+3. zachowaną obecną funkcjonalność
+4. kod frontendu bardziej uporządkowany i łatwiejszy w maintenance
 
-Nowe zależności:
-hono
-@hono/node-server
-open (do otwarcia przeglądarki)
-
-Testy
-Plik: tests/server/api.test.ts
-
-GET /api/status → 200 + poprawna struktura
-GET /api/invoices → lista faktur
-GET /api/config → config bez tokenów
-POST /api/sync → SSE stream z progressem
-GET /api/invoices/:ref/download → plik XML
-
-Nie rób
-Nie używaj React, Vue, Svelte (vanilla JS only)
-Nie dodawaj build stepa (webpack, vite)
-Nie dodawaj autentykacji
-Nie słuchaj na 0.0.0.0
-Nie modyfikuj istniejących modułów
-(ksef client, file manager, index tracker)
-
-Zamiast tego:
-$ npx tsx src/index.ts sync --from 2024-01-01 --to 2024-01-31
-⬇️ Pobieram: [████████░░░░░░░░] 15/35 (43%)
-
-Użytkownik zobaczy to:
-$ npx tsx src/index.ts
-🧾 KSeF Sync działa na http://localhost:3000
-
-otwiera się przeglądarka z ładnym dashboardem
-klika "Synchronizuj"
-widzi progress bar
-pobiera pliki jednym klikiem
+## Na koniec
+Po wdrożeniu:
+- opisz krótko co zostało poprawione
+- wypisz, czy problem z ładowaniem CSS/JS istniał i jak został naprawiony
+- podaj, które pliki zostały zmienione
