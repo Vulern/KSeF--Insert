@@ -3,20 +3,15 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Node.js 20+](https://img.shields.io/badge/Node.js-20%2B-green)](https://nodejs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.3%2B-blue)](https://www.typescriptlang.org/)
-[![Tests](https://img.shields.io/badge/Tests-93%20passing-brightgreen)](./tests/)
 
-Narzędzie CLI do automatycznego pobierania e-faktur z Krajowego Systemu e-Faktur (KSeF) i zapisywania jako pliki XML gotowe do otwarcia w programie Insert.
+Projekt TypeScript/Node.js do integracji KSeF (Krajowy System e-Faktur) z programem Insert (desktop).
 
 ## 🎯 Cechy
 
-- ✅ **Automatyczne pobieranie** faktur zakupowych i sprzedażowych
-- ✅ **Śledzenie duplikatów** - nigdy nie pobiera tego samego dwa razy
-- ✅ **Walidacja XML** - sprawdzenie poprawności schematu FA(2)
-- ✅ **Struktura folderów** - automatyczne organizowanie po datach i typach
-- ✅ **Graceful shutdown** - bezpieczne zamknięcie nawet podczas pobierania
-- ✅ **CLI z 5 komendami** - sync, status, list, get, validate
-- ✅ **100% TypeScript** - pełna type safety
-- ✅ **93 testy** - pokrycie wszystkich scenariuszy
+- ✅ **KSeF client** (sesje, requesty, retry/error handling)
+- ✅ **Storage layer** (zapis XML na dysk, atomic writes, `.index.json` duplikaty)
+- ✅ **Walidacja XML**
+- ✅ **CLI + Web UI** (lokalne uruchomienie)
 
 ## 🚀 Quick Start
 
@@ -27,10 +22,6 @@ Narzędzie CLI do automatycznego pobierania e-faktur z Krajowego Systemu e-Faktu
 
 ### 2. Instalacja
 ```bash
-# Sklonuj projekt
-git clone https://github.com/your-org/ksef-sync.git
-cd ksef-sync
-
 # Zainstaluj zależności
 npm install
 
@@ -134,12 +125,11 @@ LOG_LEVEL=info
 
 ## 📖 Dokumentacja
 
-| Link | Dla kogo | Zawartość |
-|------|----------|----------|
-| [📚 Instrukcja użytkownika](docs/instrukcja-uzytkownika.md) | Księgowych | Krok po kroku, rozwiązywanie problemów |
-| [🛠️ Instrukcja techniczna](docs/instrukcja-techniczna.md) | Developerów | Architektura, moduły, testowanie |
-| [🔌 API KSeF](docs/ksef-api.md) | Techników | Endpointy, error codes, FA(2) |
-| [📝 Changelog](docs/changelog.md) | Wszystkich | Historia zmian i plany |
+- [📚 Instrukcja użytkownika](docs/instrukcja-uzytkownika.md)
+- [🛠️ Instrukcja techniczna](docs/instrukcja-techniczna.md)
+- [🏗️ Architektura](docs/architektura.md)
+- [🔌 API KSeF (referencja)](docs/ksef-api.md)
+- [📝 Changelog](docs/changelog.md)
 
 ## 🧪 Testowanie
 
@@ -188,15 +178,6 @@ KSEF_BASE_URL=https://ksef.mf.gov.pl/api
 - Rzeczywiste faktury
 - Wpływa na sprawozdania
 - ⚠️ Używaj ostrożnie!
-
-## 📊 Statystyki
-
-- **93 testów** - 100% passing
-- **721 linii kodu** - Core storage module
-- **5 komend CLI** - Pełna funkcjonalność
-- **0 TypeScript errors** - Type safe
-
-## 🐛 Troubleshooting
 
 ### ❌ "Token expired"
 ```bash
