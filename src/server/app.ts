@@ -9,7 +9,7 @@ import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 import { readFile } from 'fs/promises';
 import { setupApiRoutes } from './api.js';
-import { logger } from '../logger.js';
+import { serverLogger } from '../logger.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -20,6 +20,22 @@ const __dirname = dirname(__filename);
 export function createApp(): Hono {
   const app = new Hono();
 
+  // Request logging middleware
+  app.use('*', async (c, next) => {
+    const start = Date.now();
+    try {
+      await next();
+    } finally {
+      const responseTime = Date.now() - start;
+      serverLogger.info('HTTP request', {
+        method: c.req.method,
+        path: c.req.path,
+        statusCode: c.res.status,
+        responseTime,
+      });
+    }
+  });
+
   // Serve static files from src/ui
   const uiPath = resolve(dirname(__dirname), 'ui');
 
@@ -29,7 +45,7 @@ export function createApp(): Hono {
       const html = await readFile(resolve(uiPath, 'index.html'), 'utf-8');
       return c.html(html);
     } catch (error) {
-      logger.error('Error serving index.html:', error);
+      serverLogger.error('Error serving index.html', { error: error instanceof Error ? error.message : String(error) });
       return c.text('Not Found', 404);
     }
   });
@@ -62,7 +78,7 @@ export function createApp(): Hono {
 
       return c.body(content); // Use c.body for binary/correct encoding
     } catch (error) {
-      logger.warn(`Static file not found: ${filename}`);
+      serverLogger.warn('Static file not found', { filename });
       return c.text('Not Found', 404);
     }
   });
@@ -72,13 +88,13 @@ export function createApp(): Hono {
 
   // 404 handler
   app.notFound((c) => {
-    logger.warn(`404 Not Found: ${c.req.path}`);
+    serverLogger.warn('404 Not Found', { path: c.req.path });
     return c.json({ error: 'Not Found' }, 404);
   });
 
   // Error handler
   app.onError((err, c) => {
-    logger.error('Request error:', err);
+    serverLogger.error('Request error', { error: err.message, stack: err.stack });
     return c.json({ error: 'Internal Server Error', message: err.message }, 500);
   });
 

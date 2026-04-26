@@ -71,7 +71,7 @@
         </div>
 
         <div class="form-container">
-          <div class="form-grid">
+          <div class="form-row">
             <div class="form-group">
               <label for="dateFrom" class="form-label">Data od</label>
               <input type="date" id="dateFrom" class="form-input" value="2024-01-01" />
@@ -209,6 +209,60 @@
             <span class="btn-icon">📂</span>
             <span class="btn-text">Otwórz folder</span>
           </button>
+        </div>
+      </section>
+
+      <!-- System Diagnostics + Live Logs -->
+      <section class="section-card">
+        <div class="section-header">
+          <h2 class="section-title">🩺 Diagnostyka systemu</h2>
+          <p class="section-description">Health check oraz logi w czasie rzeczywistym</p>
+        </div>
+
+        <div class="diag-badges">
+          <div class="diag-badge" id="badgeSystem">● System</div>
+          <div class="diag-badge" id="badgeKsef">● KSeF</div>
+          <div class="diag-badge" id="badgeDisk">● Dysk</div>
+          <div class="diag-badge" id="badgeConfig">● Config</div>
+        </div>
+
+        <div class="diag-controls">
+          <div class="form-group">
+            <label class="form-label" for="logLevelFilter">Poziom</label>
+            <select id="logLevelFilter" class="form-input">
+              <option value="">Wszystkie</option>
+              <option value="error">error</option>
+              <option value="warn">warn</option>
+              <option value="info">info</option>
+              <option value="debug">debug</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="logModuleFilter">Moduł</label>
+            <select id="logModuleFilter" class="form-input">
+              <option value="">Wszystkie</option>
+              <option value="ksef-client">ksef</option>
+              <option value="file-manager">storage</option>
+              <option value="web-server">server</option>
+              <option value="xml-validator">validator</option>
+            </select>
+          </div>
+
+          <div class="form-group full-width diag-actions">
+            <button id="diagRefreshBtn" class="btn btn-secondary">
+              <span class="btn-icon">🔄</span>
+              <span class="btn-text">Odśwież</span>
+            </button>
+            <button id="diagDownloadLogsBtn" class="btn btn-primary">
+              <span class="btn-icon">⬇️</span>
+              <span class="btn-text">Pobierz logi</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="log-feed">
+          <div class="log-feed-header">📡 Live feed</div>
+          <pre id="logFeed" class="log-feed-body">Łączenie z log stream…</pre>
         </div>
       </section>
     </main>

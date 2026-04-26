@@ -1,0 +1,24 @@
+# Śmieci i paczki
+node_modules
+dist
+.git
+.cursor
+.next
+.tmp
+pnpm-lock.yaml
+package-lock.json
+
+# Dane Twojego projektu (bardzo ważne!)
+# Nie chcemy, żeby Cursor czytał tysiące pobranych faktur XML
+output/
+logs/
+*.log
+*.xml
+
+# Testy i raporty
+coverage/
+.nyc_output
+
+# Pliki środowiskowe (bezpieczeństwo)
+.env
+.env.local

@@ -4,8 +4,9 @@
  */
 
 import { KsefClient } from './client.js';
-import { logger } from '../logger.js';
+import { ksefLogger } from '../logger.js';
 import { KsefAuthError, KsefValidationError } from '../errors.js';
+import { maskNip, maskToken } from '../utils/sanitize.js';
 import type { SessionInfo } from './types.js';
 
 /**
@@ -23,7 +24,7 @@ export class KsefAuth {
    * Establishes a session valid for 30 minutes
    */
   async authenticate(nip: string, token: string): Promise<SessionInfo> {
-    logger.info(`Authenticating KSeF with NIP: ${nip}`);
+    ksefLogger.info('🔐 Autentykacja KSeF', { nip: maskNip(nip), token: maskToken(token) });
 
     try {
       this.sessionInfo = await this.client.authenticate(nip, token);
@@ -31,10 +32,10 @@ export class KsefAuth {
       // Schedule automatic token refresh (refresh at 80% of expiry time)
       this.scheduleTokenRefresh();
 
-      logger.info(`Authentication successful. Session valid until: ${this.sessionInfo.sessionToken.expiryDate}`);
+      ksefLogger.info('🔐 Autentykacja OK', { expiresAt: this.sessionInfo.sessionToken.expiryDate });
       return this.sessionInfo;
     } catch (error) {
-      logger.error('Authentication failed', error);
+      ksefLogger.error('❌ Błąd autentykacji', { error: error instanceof Error ? error.message : String(error) });
       throw new KsefAuthError(
         error instanceof Error ? error.message : String(error),
         'AUTHENTICATION_FAILED'
@@ -75,18 +76,18 @@ export class KsefAuth {
    */
   async logout(): Promise<void> {
     if (!this.sessionInfo) {
-      logger.warn('No active session to logout from');
+      ksefLogger.warn('⚠️ Brak aktywnej sesji do wylogowania');
       return;
     }
 
-    logger.info(`Logging out from KSeF session: ${this.sessionInfo.referenceNumber}`);
+    ksefLogger.info('🔒 Wylogowanie z sesji', { referenceNumber: this.sessionInfo.referenceNumber });
 
     try {
       await this.client.terminateSession();
       this.clearSessionInfo();
-      logger.info('Logout successful');
+      ksefLogger.info('🔒 Wylogowano');
     } catch (error) {
-      logger.error('Logout failed', error);
+      ksefLogger.error('❌ Wylogowanie nieudane', { error: error instanceof Error ? error.message : String(error) });
       this.clearSessionInfo(); // Clear local session even if API call failed
       throw new KsefAuthError(
         error instanceof Error ? error.message : String(error),
@@ -152,15 +153,17 @@ export class KsefAuth {
     // Refresh at 80% of expiry time (e.g., for 30 min session, refresh at 24 min)
     const refreshTime = Math.max(timeUntilExpiry * 0.8, 60000); // At least 1 minute
 
-    logger.info(`Scheduling token refresh in ${Math.round(refreshTime / 1000)} seconds`);
+    ksefLogger.info('⏳ Zaplanowano odświeżenie tokenu', { inSeconds: Math.round(refreshTime / 1000) });
 
     this.refreshTokenTimeout = setTimeout(() => {
       this.refreshToken()
         .then(() => {
-          logger.info('Token refreshed successfully');
+          ksefLogger.info('🔁 Token odświeżony');
         })
         .catch((error) => {
-          logger.error('Automatic token refresh failed', error);
+          ksefLogger.error('❌ Automatyczne odświeżenie tokenu nieudane', {
+            error: error instanceof Error ? error.message : String(error),
+          });
         });
     }, refreshTime);
   }

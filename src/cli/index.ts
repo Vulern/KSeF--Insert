@@ -9,6 +9,7 @@ import { createStatusCommand } from './commands/status.js';
 import { createListCommand } from './commands/list.js';
 import { createGetCommand } from './commands/get.js';
 import { createValidateCommand } from './commands/validate.js';
+import { createDiagnoseCommand } from './commands/diagnose.js';
 import { logger } from '../logger.js';
 import { ksefClient } from '../ksef/client.js';
 import { printError, emojis } from './formatter.js';
@@ -22,6 +23,7 @@ export function setupCli(program: Command): void {
   program.addCommand(createListCommand());
   program.addCommand(createGetCommand());
   program.addCommand(createValidateCommand());
+  program.addCommand(createDiagnoseCommand());
 
   // Set up graceful shutdown
   setupGracefulShutdown();
