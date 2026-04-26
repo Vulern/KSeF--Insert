@@ -5,7 +5,7 @@
 
 import { readFile, readdir } from 'fs/promises';
 import { join, extname, basename } from 'path';
-import { logger } from '../logger.js';
+import { validatorLogger } from '../logger.js';
 import { KsefValidationError } from '../errors.js';
 
 export interface ValidationError {
@@ -40,9 +40,9 @@ export class InvoiceXMLValidator {
   constructor(xsdPath?: string) {
     this.xsdPath = xsdPath || null;
     if (this.xsdPath) {
-      logger.info(`XML Validator initialized with XSD: ${this.xsdPath}`);
+      validatorLogger.info('XML Validator initialized with XSD', { xsdPath: this.xsdPath });
     } else {
-      logger.info('XML Validator initialized in basic mode (XSD not available)');
+      validatorLogger.info('XML Validator initialized in basic mode (XSD not available)');
     }
   }
 
@@ -50,7 +50,7 @@ export class InvoiceXMLValidator {
    * Validate a single XML file
    */
   async validate(xmlPath: string): Promise<ValidationResult> {
-    logger.info(`Validating: ${xmlPath}`);
+    validatorLogger.info('Validating XML file', { filePath: xmlPath });
 
     try {
       const content = await readFile(xmlPath, 'utf-8');
@@ -95,7 +95,10 @@ export class InvoiceXMLValidator {
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
-      logger.error(`Validation error for ${xmlPath}:`, error);
+      validatorLogger.error('Validation error', {
+        filePath: xmlPath,
+        error: message,
+      });
 
       return {
         filePath: xmlPath,
@@ -111,7 +114,7 @@ export class InvoiceXMLValidator {
    * Validate all XML files in a directory
    */
   async validateDir(dirPath: string): Promise<BatchValidationResult> {
-    logger.info(`Validating directory: ${dirPath}`);
+    validatorLogger.info('Validating directory', { dirPath });
 
     const results: ValidationResult[] = [];
     let total = 0;
@@ -133,7 +136,10 @@ export class InvoiceXMLValidator {
         }
       }
     } catch (error) {
-      logger.error(`Directory validation error: ${dirPath}`, error);
+      validatorLogger.error('Directory validation error', {
+        dirPath,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
 
     return {

@@ -9,8 +9,9 @@
 
 import fs from 'fs/promises';
 import path from 'path';
-import { logger } from '../logger.js';
+import { storageLogger } from '../logger.js';
 import { KsefValidationError } from '../errors.js';
+import { maskNip } from '../utils/sanitize.js';
 import { IndexTracker } from './index-tracker.js';
 import { generateFileName, generateFolderPath, isValidFileName } from './naming.js';
 import type {
@@ -43,7 +44,7 @@ export class InvoiceFileManager {
     const indexPath = path.join(this.config.outputDir, '.index.json');
     this.indexTracker = new IndexTracker(indexPath);
 
-    logger.info(`InvoiceFileManager initialized with output dir: ${this.config.outputDir}`);
+    storageLogger.info('💾 FileManager initialized', { outputDir: this.config.outputDir });
   }
 
   /**
@@ -53,15 +54,18 @@ export class InvoiceFileManager {
     try {
       // Create output directory if it doesn't exist
       await fs.mkdir(this.config.outputDir, { recursive: true });
+      storageLogger.info('📁 Utworzono/zweryfikowano katalog output', { outputDir: this.config.outputDir });
 
       // Load existing index
       await this.indexTracker.load();
       this.indexLoaded = true;
 
       const stats = this.indexTracker.getStats();
-      logger.info(`Loaded ${stats.total} invoices from index, last sync: ${stats.lastSync}`);
+      storageLogger.debug('Index loaded', { total: stats.total, lastSync: stats.lastSync });
     } catch (error) {
-      logger.error('Failed to initialize file manager', error);
+      storageLogger.error('Failed to initialize file manager', {
+        error: error instanceof Error ? error.message : String(error),
+      });
       throw error;
     }
   }
@@ -86,11 +90,14 @@ export class InvoiceFileManager {
       throw new KsefValidationError('Header must be a valid object');
     }
 
-    logger.info(`Saving invoice: ${header.ksefReferenceNumber}`);
+    storageLogger.info('💾 Zapis faktury', {
+      ksefReferenceNumber: header.ksefReferenceNumber,
+      nip: header.nip ? maskNip(String(header.nip)) : undefined,
+    });
 
     // Check if already downloaded
     if (this.indexTracker.isAlreadyDownloaded(header.ksefReferenceNumber)) {
-      logger.warn(`Invoice ${header.ksefReferenceNumber} already exists, skipping`);
+      storageLogger.info('⏭️ Pominięto duplikat', { ksefReferenceNumber: header.ksefReferenceNumber });
 
       const folderPath = generateFolderPath(header);
       const fileName = generateFileName(header);
@@ -112,12 +119,12 @@ export class InvoiceFileManager {
     try {
       // Create directories recursively
       await fs.mkdir(fullFolderPath, { recursive: true });
-      logger.debug(`Created directory: ${fullFolderPath}`);
+      storageLogger.info('📁 Utworzono katalog', { path: fullFolderPath });
 
       // Check if file exists (double-check in case of concurrent writes)
       try {
         await fs.access(filePath);
-        logger.warn(`File ${filePath} already exists, skipping`);
+        storageLogger.info('⏭️ Plik już istnieje, pomijam', { filePath });
 
         return {
           filePath,
@@ -132,11 +139,11 @@ export class InvoiceFileManager {
       const tempPath = `${filePath}.tmp`;
 
       await fs.writeFile(tempPath, xml, 'utf-8');
-      logger.debug(`Wrote temp file: ${tempPath}`);
+      storageLogger.debug('Wrote temp file', { tempPath });
 
       // Atomic rename
       await fs.rename(tempPath, filePath);
-      logger.info(`Saved invoice to: ${filePath}`);
+      storageLogger.info('💾 Zapisano fakturę', { filePath });
 
       // Update index
       const invoiceDate = header.invoicingDate || header.issueDate || new Date().toISOString();
@@ -160,7 +167,10 @@ export class InvoiceFileManager {
         alreadyExisted: false,
       };
     } catch (error) {
-      logger.error(`Failed to save invoice ${header.ksefReferenceNumber}`, error);
+      storageLogger.error('Błąd zapisu faktury', {
+        ksefReferenceNumber: header.ksefReferenceNumber,
+        error: error instanceof Error ? error.message : String(error),
+      });
 
       // Clean up temp file if it exists
       try {
@@ -187,7 +197,7 @@ export class InvoiceFileManager {
       throw new KsefValidationError('File manager not initialized. Call initialize() first.');
     }
 
-    logger.info(`Processing batch of ${invoices.length} invoices`);
+    storageLogger.info('💾 Batch start', { total: invoices.length });
 
     const result: BatchSaveResult = {
       saved: 0,
@@ -209,11 +219,15 @@ export class InvoiceFileManager {
       } catch (error) {
         const errorMsg = error instanceof Error ? error.message : String(error);
         result.errors.push(errorMsg);
-        logger.warn(`Error saving invoice in batch: ${errorMsg}`);
+        storageLogger.warn('⚠️ Error saving invoice in batch', { error: errorMsg });
       }
     }
 
-    logger.info(`Batch processing complete: ${result.saved} saved, ${result.skipped} skipped, ${result.errors.length} errors`);
+    storageLogger.info('💾 Batch complete', {
+      saved: result.saved,
+      skipped: result.skipped,
+      errors: result.errors.length,
+    });
 
     return result;
   }
@@ -250,7 +264,7 @@ export class InvoiceFileManager {
       });
     }
 
-    logger.info(`Listed ${result.length} saved invoices`);
+    storageLogger.debug('Listed saved invoices', { total: result.length });
     return result;
   }
 
@@ -262,13 +276,13 @@ export class InvoiceFileManager {
       throw new KsefValidationError('File manager not initialized. Call initialize() first.');
     }
 
-    logger.info(`Deleting invoice: ${ksefReferenceNumber}`);
+    storageLogger.info('🗑️ Delete invoice', { ksefReferenceNumber });
 
     const entries = this.indexTracker.getAllEntries();
     const entry = entries[ksefReferenceNumber];
 
     if (!entry) {
-      logger.warn(`Invoice ${ksefReferenceNumber} not found in index`);
+      storageLogger.warn('Invoice not found in index', { ksefReferenceNumber });
       return false;
     }
 
@@ -278,22 +292,25 @@ export class InvoiceFileManager {
       // Delete file
       try {
         await fs.rm(filePath);
-        logger.info(`Deleted file: ${filePath}`);
+        storageLogger.info('Deleted file', { filePath });
       } catch (error) {
         if ((error as any)?.code !== 'ENOENT') {
           throw error;
         }
-        logger.warn(`File not found on disk: ${filePath}`);
+        storageLogger.warn('File not found on disk', { filePath });
       }
 
       // Remove from index
       this.indexTracker.removeEntry(ksefReferenceNumber);
       await this.indexTracker.save();
 
-      logger.info(`Deleted invoice from index: ${ksefReferenceNumber}`);
+      storageLogger.info('Deleted invoice from index', { ksefReferenceNumber });
       return true;
     } catch (error) {
-      logger.error(`Failed to delete invoice ${ksefReferenceNumber}`, error);
+      storageLogger.error('Failed to delete invoice', {
+        ksefReferenceNumber,
+        error: error instanceof Error ? error.message : String(error),
+      });
       throw new KsefValidationError(
         `Failed to delete invoice: ${error instanceof Error ? error.message : String(error)}`
       );

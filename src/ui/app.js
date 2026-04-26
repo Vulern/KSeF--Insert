@@ -33,16 +33,41 @@ const footerEnv = document.getElementById('footerEnv');
 const openFolderBtn = document.getElementById('openFolderBtn');
 const toastContainer = document.getElementById('toastContainer');
 
+// System diagnostics + logs
+const badgeSystem = document.getElementById('badgeSystem');
+const badgeKsef = document.getElementById('badgeKsef');
+const badgeDisk = document.getElementById('badgeDisk');
+const badgeConfig = document.getElementById('badgeConfig');
+const logFeed = document.getElementById('logFeed');
+const logLevelFilter = document.getElementById('logLevelFilter');
+const logModuleFilter = document.getElementById('logModuleFilter');
+const diagRefreshBtn = document.getElementById('diagRefreshBtn');
+const diagDownloadLogsBtn = document.getElementById('diagDownloadLogsBtn');
+
+let logsEventSource = null;
+
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
   setDefaultDates();
   loadStatus();
+  loadDiagnose();
+  startLogStream();
   generateMonthOptions();
   loadInvoices();
 
   if (syncButton) syncButton.addEventListener('click', handleSync);
   if (monthSelect) monthSelect.addEventListener('change', loadInvoices);
   if (openFolderBtn) openFolderBtn.addEventListener('click', handleOpenFolder);
+
+  if (diagRefreshBtn) diagRefreshBtn.addEventListener('click', () => {
+    loadDiagnose();
+    restartLogStream();
+  });
+  if (diagDownloadLogsBtn) diagDownloadLogsBtn.addEventListener('click', () => {
+    window.location.href = '/api/logs/download';
+  });
+  if (logLevelFilter) logLevelFilter.addEventListener('change', restartLogStream);
+  if (logModuleFilter) logModuleFilter.addEventListener('change', restartLogStream);
 });
 
 /**
@@ -93,6 +118,82 @@ async function loadStatus() {
     if (statusText) statusText.textContent = 'Błąd';
     showToast('Błąd ładowania statusu', 'error');
   }
+}
+
+function setBadge(el, ok) {
+  if (!el) return;
+  el.classList.remove('ok', 'fail');
+  el.classList.add(ok ? 'ok' : 'fail');
+}
+
+async function loadDiagnose() {
+  try {
+    const res = await fetch('/api/diagnose');
+    if (!res.ok) throw new Error('Failed to fetch diagnose');
+    const report = await res.json();
+
+    const checks = report.checks || {};
+    const systemOk = report.status === 'ok';
+
+    setBadge(badgeSystem, systemOk);
+    setBadge(badgeKsef, checks.ksef?.status === 'pass');
+    setBadge(badgeDisk, checks.storage?.status === 'pass');
+    setBadge(badgeConfig, checks.config?.status === 'pass' && checks.env?.status === 'pass');
+  } catch (e) {
+    setBadge(badgeSystem, false);
+    setBadge(badgeKsef, false);
+    setBadge(badgeDisk, false);
+    setBadge(badgeConfig, false);
+  }
+}
+
+function restartLogStream() {
+  try {
+    if (logsEventSource) logsEventSource.close();
+  } catch {}
+  if (logFeed) logFeed.textContent = 'Łączenie z log stream…';
+  startLogStream();
+}
+
+function formatLogLine(entry) {
+  const ts = entry.time || entry.timestamp || entry.ts || entry.date;
+  const t = ts ? new Date(ts).toLocaleTimeString('pl-PL') : '';
+  const lvl = String(entry.level || '').toUpperCase();
+  const mod = entry.module ? `[${entry.module}]` : '';
+  const msg = entry.msg || entry.message || '';
+  return `${t} ${lvl} ${mod} ${msg}`.trim();
+}
+
+function startLogStream() {
+  const level = logLevelFilter?.value || '';
+  const module = logModuleFilter?.value || '';
+
+  const url = new URL('/api/logs/stream', window.location.origin);
+  if (level) url.searchParams.set('level', level);
+  if (module) url.searchParams.set('module', module);
+
+  logsEventSource = new EventSource(url.toString());
+  const maxLines = 200;
+  let buffer = [];
+
+  logsEventSource.onmessage = (ev) => {
+    try {
+      const entry = JSON.parse(ev.data);
+      buffer.push(formatLogLine(entry));
+      if (buffer.length > maxLines) buffer = buffer.slice(buffer.length - maxLines);
+      if (logFeed) logFeed.textContent = buffer.join('\n');
+    } catch {
+      // ignore
+    }
+  };
+
+  logsEventSource.onerror = () => {
+    if (logFeed && logFeed.textContent.includes('Łączenie') === false) {
+      // keep current logs
+      return;
+    }
+    if (logFeed) logFeed.textContent = 'Nie można połączyć z log stream.';
+  };
 }
 
 /**

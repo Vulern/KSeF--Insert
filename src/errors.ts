@@ -2,6 +2,18 @@
  * KSeF Error Classes
  */
 
+export class KSeFSyncError extends Error {
+  constructor(
+    message: string,
+    public readonly code: string,
+    public readonly context: Record<string, unknown> = {},
+    public readonly suggestion?: string
+  ) {
+    super(message);
+    this.name = 'KSeFSyncError';
+  }
+}
+
 export class KsefError extends Error {
   constructor(
     message: string,

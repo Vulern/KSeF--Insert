@@ -5,13 +5,14 @@
 
 import axios, { AxiosInstance, AxiosError } from 'axios';
 import { config } from '../config.js';
-import { logger } from '../logger.js';
+import { ksefLogger } from '../logger.js';
 import {
   KsefConnectionError,
   KsefApiError,
   KsefAuthError,
   KsefValidationError,
 } from '../errors.js';
+import { maskNip, maskToken, sanitizeHeaders, truncateBody } from '../utils/sanitize.js';
 import {
   parseKsefXml,
   xmlToObject,
@@ -82,41 +83,83 @@ export class KsefClient {
       (requestConfig) => {
         const method = requestConfig.method?.toUpperCase() || 'GET';
         const url = requestConfig.url || '';
-        logger.info(`KSeF Request: ${method} ${url}`);
+        (requestConfig as any).metadata = { startTime: Date.now() };
 
-        if (requestConfig.data) {
-          logger.debug(`Request body:`, requestConfig.data);
-        }
+        ksefLogger.debug('HTTP request sent', {
+          method,
+          url,
+          headers: sanitizeHeaders(requestConfig.headers as any),
+          body: this.sanitizeBodyForLogs(requestConfig.data),
+        });
 
         return requestConfig;
       },
       (error) => {
-        logger.error('Request config error', error);
+        ksefLogger.error('Request config error', { error: error instanceof Error ? error.message : String(error) });
         return Promise.reject(error);
       }
     );
 
     this.httpClient.interceptors.response.use(
       (response) => {
-        logger.info(
-          `KSeF Response: ${response.status} ${response.config.method?.toUpperCase()} ${response.config.url}`
-        );
-        if (response.data) {
-          logger.debug(`Response body:`, response.data);
-        }
+        const method = response.config.method?.toUpperCase() || 'GET';
+        const url = response.config.url || '';
+        const startTime = (response.config as any)?.metadata?.startTime as number | undefined;
+        const responseTime = startTime ? Date.now() - startTime : undefined;
+
+        ksefLogger.debug('HTTP response received', {
+          method,
+          url,
+          statusCode: response.status,
+          responseTime,
+          body: this.sanitizeBodyForLogs(response.data, response.headers?.['content-type']),
+        });
         return response;
       },
       (error) => {
+        const axiosErr = axios.isAxiosError(error) ? error : undefined;
+        const method = axiosErr?.config?.method?.toUpperCase();
+        const url = axiosErr?.config?.url;
+        const startTime = (axiosErr?.config as any)?.metadata?.startTime as number | undefined;
+        const responseTime = startTime ? Date.now() - startTime : undefined;
+
         if (error.response) {
-          logger.error(`KSeF API Error: ${error.response.status}`, error.response.data);
+          ksefLogger.error('KSeF API error', {
+            method,
+            url,
+            statusCode: error.response.status,
+            responseTime,
+            body: this.sanitizeBodyForLogs(error.response.data, error.response.headers?.['content-type']),
+          });
         } else if (error.code) {
-          logger.error(`KSeF Connection Error: ${error.code}`, error.message);
+          ksefLogger.error('KSeF connection error', {
+            method,
+            url,
+            error: error.code,
+            message: error.message,
+            responseTime,
+          });
         } else {
-          logger.error('KSeF Request Error', error.message);
+          ksefLogger.error('KSeF request error', {
+            method,
+            url,
+            message: error?.message,
+            responseTime,
+          });
         }
         return Promise.reject(error);
       }
     );
+  }
+
+  private sanitizeBodyForLogs(body: unknown, contentType?: string): unknown {
+    if (body == null) return body;
+
+    const ct = String(contentType || '').toLowerCase();
+    if (ct.includes('xml')) return '[XML omitted]';
+    if (typeof body === 'string' && body.trim().startsWith('<')) return '[XML omitted]';
+
+    return truncateBody(body, 500);
   }
 
   /**
@@ -179,10 +222,13 @@ export class KsefClient {
         }
 
         const delay = this.calculateBackoffDelay(attempt);
-        logger.warn(
-          `Attempt ${attempt + 1} failed for ${operationName}, retrying in ${delay}ms`,
-          error instanceof Error ? error.message : String(error)
-        );
+        ksefLogger.warn('Request retry', {
+          attempt: attempt + 1,
+          maxAttempts: this.retryConfig.maxRetries + 1,
+          operationName,
+          delayMs: delay,
+          error: error instanceof Error ? error.message : String(error),
+        });
 
         await new Promise((resolve) => setTimeout(resolve, delay));
       }
@@ -244,7 +290,7 @@ export class KsefClient {
       });
     }
 
-    logger.info(`Authenticating KSeF with NIP: ${authNip}`);
+    ksefLogger.info('🔐 Inicjalizacja sesji KSeF', { nip: maskNip(authNip), token: maskToken(authToken) });
 
     const sessionInfo = await this.executeWithRetry(
       async () => {
@@ -277,7 +323,7 @@ export class KsefClient {
       createdAt: new Date(),
     };
 
-    logger.info(`Authentication successful. Session: ${sessionInfo.referenceNumber}`);
+    ksefLogger.info('🔐 Sesja otwarta', { referenceNumber: sessionInfo.referenceNumber });
     return sessionInfo;
   }
 
@@ -289,7 +335,7 @@ export class KsefClient {
       throw new KsefValidationError('No active session to terminate');
     }
 
-    logger.info(`Terminating session: ${this.sessionState.referenceNumber}`);
+    ksefLogger.info('🔒 Zamykam sesję', { referenceNumber: this.sessionState.referenceNumber });
 
     await this.executeWithRetry(
       async () => {
@@ -301,7 +347,7 @@ export class KsefClient {
     );
 
     this.sessionState = null;
-    logger.info('Session terminated');
+    ksefLogger.info('🔒 Sesja zamknięta');
   }
 
   /**
@@ -324,7 +370,7 @@ export class KsefClient {
     }
 
     // Session expired, re-authenticate
-    logger.info('Session expired, re-authenticating...');
+    ksefLogger.warn('⚠️ Sesja wygasła — odnawiam');
     const sessionInfo = await this.authenticate();
     return sessionInfo.sessionToken.token;
   }
@@ -349,7 +395,7 @@ export class KsefClient {
   async sendInvoice(invoiceXml: string): Promise<SendInvoiceResult> {
     const token = await this.ensureValidSession();
 
-    logger.info('Sending invoice to KSeF');
+    ksefLogger.info('📤 Wysyłam fakturę do KSeF');
 
     const result = await this.executeWithRetry(
       async () => {
@@ -374,7 +420,7 @@ export class KsefClient {
       'sendInvoice'
     );
 
-    logger.info(`Invoice sent successfully: ${result.elementReferenceNumber}`);
+    ksefLogger.info('📤 Faktura wysłana', { elementReferenceNumber: result.elementReferenceNumber });
     return result;
   }
 
@@ -388,7 +434,7 @@ export class KsefClient {
       throw new KsefValidationError('KSeF number is required');
     }
 
-    logger.info(`Fetching invoice from KSeF: ${ksefNumber}`);
+    ksefLogger.info('📄 Pobieram fakturę', { ksefReferenceNumber: ksefNumber });
 
     const invoice = await this.executeWithRetry(
       async () => {
@@ -409,7 +455,7 @@ export class KsefClient {
       'getInvoice'
     );
 
-    logger.info(`Invoice fetched successfully: ${ksefNumber}`);
+    ksefLogger.info('📄 Pobrano fakturę', { ksefReferenceNumber: ksefNumber });
     return invoice;
   }
 
@@ -422,7 +468,7 @@ export class KsefClient {
     const pageSize = Math.min(params.pageSize || 100, 100);
     const pageOffset = params.pageOffset || 0;
 
-    logger.info(`Querying invoices: pageSize=${pageSize}, pageOffset=${pageOffset}`);
+    ksefLogger.info('📋 Query faktur', { pageSize, pageOffset });
 
     const result = await this.executeWithRetry(
       async () => {
@@ -447,9 +493,10 @@ export class KsefClient {
       'queryInvoices'
     );
 
-    logger.info(
-      `Query completed: ${result.numberOfElements || 0} invoices found (page ${pageOffset})`
-    );
+    ksefLogger.info('📋 Znaleziono faktury', {
+      found: result.numberOfElements || 0,
+      pageOffset,
+    });
     return result;
   }
 
@@ -463,7 +510,7 @@ export class KsefClient {
       throw new KsefValidationError('Element reference number is required');
     }
 
-    logger.info(`Fetching invoice status: ${elementRefNumber}`);
+    ksefLogger.info('📦 Pobieram status faktury', { elementReferenceNumber: elementRefNumber });
 
     const status = await this.executeWithRetry(
       async () => {
@@ -483,7 +530,7 @@ export class KsefClient {
       'getInvoiceStatus'
     );
 
-    logger.info(`Invoice status: ${status.processingCode}`);
+    ksefLogger.info('📦 Status faktury', { processingCode: status.processingCode });
     return status;
   }
 
@@ -493,7 +540,7 @@ export class KsefClient {
   async listActiveSessions(): Promise<SessionInfo[]> {
     await this.ensureValidSession();
 
-    logger.info('Listing active sessions');
+    ksefLogger.info('📋 Lista aktywnych sesji');
 
     const sessions = await this.executeWithRetry(
       async () => {
@@ -516,7 +563,7 @@ export class KsefClient {
       'listActiveSessions'
     );
 
-    logger.info(`Found ${sessions.length} active sessions`);
+    ksefLogger.info('📋 Aktywne sesje', { count: sessions.length });
     return sessions;
   }
 
@@ -532,7 +579,7 @@ export class KsefClient {
    */
   setRetryConfig(config: Partial<RetryConfig>): void {
     this.retryConfig = { ...this.retryConfig, ...config };
-    logger.info('Retry configuration updated', this.retryConfig);
+    ksefLogger.info('Retry configuration updated', this.retryConfig);
   }
 }
 
