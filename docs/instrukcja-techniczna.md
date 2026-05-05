@@ -85,7 +85,7 @@ flowchart TD
 **KSeF Client** (src/ksef/)
 - Autentykacja z tokenem
 - Retry logic (3 próby, exponential backoff)
-- Session management (auto-refresh)
+- Access token refresh (refreshToken → new accessToken)
 - REST API calls z Axios
 
 **File Manager** (src/storage/)
@@ -128,7 +128,8 @@ await ksefClient.terminateSession();
 ```
 
 **Features:**
-- Session token refresh automatycznie
+- Uwierzytelnianie zgodne z KSeF API 2.x: challenge → szyfrowanie tokenu → `/auth/ksef-token` → status → `/auth/token/redeem`
+- Automatyczne odświeżanie `accessToken` przez `/auth/token/refresh` (z użyciem `refreshToken`)
 - Retry logic: 3 próby, backoff 1s → 3s → 9s
 - Error hierarchy: KsefError → KsefAuthError, KsefApiError, etc.
 - Request logging na `debug` level

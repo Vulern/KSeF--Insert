@@ -60,9 +60,7 @@ cp .env.example .env
 # Otwórz .env w edytorze i uzupełnij:
 # KSEF_TOKEN=tu_wklej_token_z_KSeF
 # KSEF_NIP=5213000001
-# KSEF_BASE_URL=https://ksef-test.mf.gov.pl/api  (test)
-# lub
-# KSEF_BASE_URL=https://ksef.mf.gov.pl/api        (produkcja)
+# KSEF_BASE_URL=https://api.ksef.mf.gov.pl/v2
 ```
 
 ### Krok 4: Test połączenia
@@ -86,27 +84,15 @@ npm start -- status
 
 | Parametr | Wartość | Opis |
 |----------|---------|------|
-| `KSEF_BASE_URL` | `https://ksef-test.mf.gov.pl/api` | Test |
-| | `https://ksef.mf.gov.pl/api` | Produkcja (domyślnie) |
+| `KSEF_BASE_URL` | `https://api.ksef.mf.gov.pl/v2` | Produkcja (domyślnie) |
 | `INSERT_OUTPUT_DIR` | `./output` | Gdzie zapisywać pliki (domyślnie `./output`) |
 | `INSERT_CSV_DELIMITER` | `;` | Separator w CSV (Windows domyślnie) |
 | `INSERT_CSV_ENCODING` | `win1250` | Kodowanie CSV (domyślnie) |
 | `LOG_LEVEL` | `info` | Poziom logów: `debug`, `info`, `warn`, `error` |
 
-### Środowisko TEST vs PRODUKCJA
-
-#### TEST (do nauki i testów)
+### Środowisko PRODUKCYJNE
 ```env
-KSEF_BASE_URL=https://ksef-test.mf.gov.pl/api
-KSEF_TOKEN=token_testowy
-```
-- Brak realnych faktur
-- Nie wpływa na sprawozdania podatkowe
-- Idealny do przetestowania procesu
-
-#### PRODUKCJA (do używania)
-```env
-KSEF_BASE_URL=https://ksef.mf.gov.pl/api
+KSEF_BASE_URL=https://api.ksef.mf.gov.pl/v2
 KSEF_TOKEN=token_produkcyjny
 ```
 - Pobiera **rzeczywiste faktury**
@@ -254,8 +240,7 @@ npm start -- validate --dir ./output/faktury/2024-01/
 **Rozwiązanie**:
 1. Sprawdź połączenie internetowe
 2. Sprawdź, czy `KSEF_BASE_URL` jest poprawny:
-   - Test: `https://ksef-test.mf.gov.pl/api`
-   - Produkcja: `https://ksef.mf.gov.pl/api`
+   - Produkcja: `https://api.ksef.mf.gov.pl/v2`
 3. Czekaj 5 minut i spróbuj ponownie (serwer może być przeciążony)
 
 ### ❌ "No invoices found in the specified date range"
