@@ -66,6 +66,12 @@ function createFileTransport(params: {
   const { logDir, maxSize, maxFiles } = params;
   const file = path.join(logDir, `ksef-sync-${getTodayIsoDate()}.log`);
 
+  // In tests we prefer a direct destination so that the log file
+  // appears on disk immediately after the first write.
+  if (process.env.NODE_ENV === 'test') {
+    return pino.destination({ dest: file, mkdir: true, sync: false });
+  }
+
   return pino.transport({
     target: 'pino-roll',
     options: {

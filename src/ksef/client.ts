@@ -4,6 +4,7 @@
  */
 
 import axios, { AxiosInstance, AxiosError } from 'axios';
+import { X509Certificate, constants, publicEncrypt } from 'node:crypto';
 import { config } from '../config.js';
 import { ksefLogger } from '../logger.js';
 import {
@@ -19,6 +20,13 @@ import {
   extractFromXml,
 } from './xml-parser.js';
 import type {
+  AuthenticationChallengeResponse,
+  AuthenticationInitResponse,
+  AuthenticationOperationStatusResponse,
+  AuthenticationTokensResponse,
+  AuthenticationTokenRefreshResponse,
+  InitTokenAuthenticationRequest,
+  PublicKeyCertificate,
   SessionInfo,
   SendInvoiceResult,
   KsefInvoice,
@@ -44,6 +52,11 @@ const DEFAULT_RETRY_CONFIG: RetryConfig = {
  * HTTP status codes that should trigger retry
  */
 const RETRYABLE_STATUS_CODES = [408, 429, 500, 502, 503, 504];
+
+const DEFAULT_AUTH_POLL_CONFIG = {
+  maxAttempts: 60,
+  delayMs: 1000,
+};
 
 /**
  * Main KSeF HTTP Client
@@ -73,6 +86,137 @@ export class KsefClient {
 
     // Add request/response interceptors
     this.setupInterceptors();
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  private toDateOrThrow(value: string, fieldName: string): Date {
+    const d = new Date(value);
+    if (Number.isNaN(d.getTime())) {
+      throw new KsefApiError(`Invalid date in ${fieldName}`, 'INVALID_RESPONSE', undefined, { value });
+    }
+    return d;
+  }
+
+  private pickKsefTokenEncryptionCert(certs: PublicKeyCertificate[]): PublicKeyCertificate {
+    const now = Date.now();
+    const candidates = certs
+      .filter((c) => Array.isArray(c.usage) && c.usage.includes('KsefTokenEncryption'))
+      .filter((c) => {
+        const from = new Date(c.validFrom).getTime();
+        const to = new Date(c.validTo).getTime();
+        return !Number.isNaN(from) && !Number.isNaN(to) && from <= now && now <= to;
+      })
+      .sort((a, b) => new Date(b.validTo).getTime() - new Date(a.validTo).getTime());
+
+    if (!candidates[0]) {
+      throw new KsefAuthError('No valid KSeF token encryption certificate available', 'NO_PUBLIC_KEY');
+    }
+    return candidates[0];
+  }
+
+  private getPublicKeyPemFromCertificateBase64(certificateBase64Der: string): string {
+    const der = Buffer.from(certificateBase64Der, 'base64');
+    const x509 = new X509Certificate(der);
+    return x509.publicKey.export({ type: 'spki', format: 'pem' }).toString();
+  }
+
+  private encryptKsefTokenTokenAndTimestamp(tokenKsef: string, timestampMs: number, publicKeyPem: string): string {
+    const plaintext = `${tokenKsef}|${timestampMs}`;
+    const encrypted = publicEncrypt(
+      {
+        key: publicKeyPem,
+        padding: constants.RSA_PKCS1_OAEP_PADDING,
+        oaepHash: 'sha256',
+      },
+      Buffer.from(plaintext, 'utf8')
+    );
+    return encrypted.toString('base64');
+  }
+
+  private async fetchKsefTokenEncryptionPublicKeyPem(): Promise<string> {
+    if (this.clientConfig.ksefTokenEncryptionPublicKeyPem) {
+      return this.clientConfig.ksefTokenEncryptionPublicKeyPem;
+    }
+
+    const resp = await this.httpClient.get<PublicKeyCertificate[]>('/security/public-key-certificates');
+    if (!Array.isArray(resp.data)) {
+      throw new KsefApiError('Invalid public key certificates response', 'INVALID_RESPONSE');
+    }
+    const cert = this.pickKsefTokenEncryptionCert(resp.data);
+    return this.getPublicKeyPemFromCertificateBase64(cert.certificate);
+  }
+
+  private async getChallenge(): Promise<AuthenticationChallengeResponse> {
+    const resp = await this.httpClient.post<AuthenticationChallengeResponse>('/auth/challenge');
+    if (!resp.data?.challenge || typeof resp.data.timestampMs !== 'number') {
+      throw new KsefAuthError('Invalid challenge response', 'INVALID_RESPONSE');
+    }
+    return resp.data;
+  }
+
+  private async initAuthWithKsefToken(nip: string, tokenKsef: string): Promise<AuthenticationInitResponse> {
+    const challenge = await this.getChallenge();
+    const publicKeyPem = await this.fetchKsefTokenEncryptionPublicKeyPem();
+    const encryptedToken = this.encryptKsefTokenTokenAndTimestamp(tokenKsef, challenge.timestampMs, publicKeyPem);
+
+    const body: InitTokenAuthenticationRequest = {
+      challenge: challenge.challenge,
+      contextIdentifier: { type: 'Nip', value: nip },
+      encryptedToken,
+    };
+
+    const resp = await this.httpClient.post<AuthenticationInitResponse>('/auth/ksef-token', body);
+    if (!resp.data?.referenceNumber || !resp.data?.authenticationToken?.token) {
+      throw new KsefAuthError('Invalid authentication init response', 'INVALID_RESPONSE');
+    }
+    return resp.data;
+  }
+
+  private async pollAuthStatus(referenceNumber: string, authenticationToken: string): Promise<AuthenticationOperationStatusResponse> {
+    for (let i = 0; i < DEFAULT_AUTH_POLL_CONFIG.maxAttempts; i++) {
+      const resp = await this.httpClient.get<AuthenticationOperationStatusResponse>(`/auth/${referenceNumber}`, {
+        headers: { Authorization: `Bearer ${authenticationToken}` },
+      });
+      if (!resp.data?.status || typeof resp.data.status.code !== 'number') {
+        throw new KsefAuthError('Invalid auth status response', 'INVALID_RESPONSE');
+      }
+
+      if (resp.data.status.code !== 100) {
+        return resp.data;
+      }
+
+      await this.sleep(DEFAULT_AUTH_POLL_CONFIG.delayMs);
+    }
+
+    throw new KsefAuthError('Authentication timed out while waiting for status', 'TIMEOUT');
+  }
+
+  private async redeemTokens(authenticationToken: string): Promise<AuthenticationTokensResponse> {
+    const resp = await this.httpClient.post<AuthenticationTokensResponse>(
+      '/auth/token/redeem',
+      {},
+      { headers: { Authorization: `Bearer ${authenticationToken}` } }
+    );
+
+    if (!resp.data?.accessToken?.token || !resp.data?.refreshToken?.token) {
+      throw new KsefAuthError('Invalid redeem token response', 'INVALID_RESPONSE');
+    }
+    return resp.data;
+  }
+
+  private async refreshAccessToken(refreshToken: string): Promise<AuthenticationTokenRefreshResponse> {
+    const resp = await this.httpClient.post<AuthenticationTokenRefreshResponse>(
+      '/auth/token/refresh',
+      {},
+      { headers: { Authorization: `Bearer ${refreshToken}` } }
+    );
+    if (!resp.data?.accessToken?.token) {
+      throw new KsefAuthError('Invalid refresh token response', 'INVALID_RESPONSE');
+    }
+    return resp.data;
   }
 
   /**
@@ -276,55 +420,67 @@ export class KsefClient {
   }
 
   /**
-   * Authenticate and create a session
-   * Returns session info with token valid for 30 minutes
+   * Authenticate to KSeF using KSeF token (documented v2 flow)
+   * Stores access/refresh tokens for subsequent requests.
    */
-  async authenticate(nip?: string, token?: string): Promise<SessionInfo> {
+  async authenticate(nip?: string, token?: string): Promise<{ referenceNumber: string }> {
     const authNip = nip || this.clientConfig.nip;
-    const authToken = token || this.clientConfig.token;
+    const tokenKsef = token || this.clientConfig.token;
 
-    if (!authNip || !authToken) {
+    if (!authNip || !tokenKsef) {
       throw new KsefValidationError('NIP and token are required for authentication', {
         nip: !!authNip,
-        token: !!authToken,
+        token: !!tokenKsef,
       });
     }
 
-    ksefLogger.info('🔐 Inicjalizacja sesji KSeF', { nip: maskNip(authNip), token: maskToken(authToken) });
+    ksefLogger.info('🔐 Inicjalizacja uwierzytelnienia KSeF', {
+      nip: maskNip(authNip),
+      token: maskToken(tokenKsef),
+    });
 
-    const sessionInfo = await this.executeWithRetry(
+    const init = await this.executeWithRetry(
       async () => {
-        // TODO: Implement actual authentication XML payload construction
-        // For now, using Bearer token authentication based on v2 API
-        const response = await this.httpClient.post<SessionInfo>(
-          '/auth/sessions',
-          {},
-          {
-            headers: {
-              Authorization: `Bearer ${authToken}`,
-            },
-          }
-        );
-
-        if (!response.data || !response.data.referenceNumber) {
-          throw new KsefAuthError('Invalid authentication response', 'INVALID_RESPONSE');
-        }
-
-        return response.data;
+        return await this.initAuthWithKsefToken(authNip, tokenKsef);
       },
       'authenticate'
     );
 
-    // Store session state
+    const status = await this.executeWithRetry(
+      async () => {
+        return await this.pollAuthStatus(init.referenceNumber, init.authenticationToken.token);
+      },
+      'authenticate.status'
+    );
+
+    if (status.status.code !== 200) {
+      const details = Array.isArray(status.status.details) ? status.status.details.join('; ') : undefined;
+      throw new KsefAuthError(
+        details
+          ? `Authentication failed: ${status.status.description} (${details})`
+          : `Authentication failed: ${status.status.description}`,
+        'AUTH_FAILED'
+      );
+    }
+
+    const tokens = await this.executeWithRetry(
+      async () => {
+        return await this.redeemTokens(init.authenticationToken.token);
+      },
+      'authenticate.redeem'
+    );
+
     this.sessionState = {
-      sessionToken: sessionInfo.sessionToken.token,
-      referenceNumber: sessionInfo.referenceNumber,
-      expiryDate: new Date(sessionInfo.sessionToken.expiryDate),
+      referenceNumber: init.referenceNumber,
+      accessToken: tokens.accessToken.token,
+      accessTokenValidUntil: this.toDateOrThrow(tokens.accessToken.validUntil, 'accessToken.validUntil'),
+      refreshToken: tokens.refreshToken.token,
+      refreshTokenValidUntil: this.toDateOrThrow(tokens.refreshToken.validUntil, 'refreshToken.validUntil'),
       createdAt: new Date(),
     };
 
-    ksefLogger.info('🔐 Sesja otwarta', { referenceNumber: sessionInfo.referenceNumber });
-    return sessionInfo;
+    ksefLogger.info('🔐 Uwierzytelniono', { referenceNumber: init.referenceNumber });
+    return { referenceNumber: init.referenceNumber };
   }
 
   /**
@@ -358,25 +514,40 @@ export class KsefClient {
       return false;
     }
 
-    return new Date() < this.sessionState.expiryDate;
+    return new Date() < this.sessionState.accessTokenValidUntil;
   }
 
   /**
-   * Get or refresh session token
+   * Get or refresh access token
    */
   private async ensureValidSession(): Promise<string> {
     if (this.isSessionValid()) {
-      return this.sessionState!.sessionToken;
+      return this.sessionState!.accessToken;
     }
 
-    // Session expired, re-authenticate
-    ksefLogger.warn('⚠️ Sesja wygasła — odnawiam');
-    const sessionInfo = await this.authenticate();
-    return sessionInfo.sessionToken.token;
+    if (!this.sessionState) {
+      throw new KsefAuthError('No active session', 'NO_SESSION');
+    }
+
+    ksefLogger.warn('⚠️ Access token wygasł — odświeżam refresh tokenem');
+    const refreshed = await this.executeWithRetry(
+      async () => {
+        return await this.refreshAccessToken(this.sessionState!.refreshToken);
+      },
+      'refreshAccessToken'
+    );
+
+    this.sessionState.accessToken = refreshed.accessToken.token;
+    this.sessionState.accessTokenValidUntil = this.toDateOrThrow(
+      refreshed.accessToken.validUntil,
+      'accessToken.validUntil'
+    );
+
+    return this.sessionState.accessToken;
   }
 
   /**
-   * Get authorization headers with session token
+   * Get authorization headers with access token
    */
   private getAuthHeaders(): Record<string, string> {
     if (!this.sessionState) {
@@ -384,7 +555,7 @@ export class KsefClient {
     }
 
     return {
-      Authorization: `Bearer ${this.sessionState.sessionToken}`,
+      Authorization: `Bearer ${this.sessionState.accessToken}`,
     };
   }
 
@@ -393,35 +564,14 @@ export class KsefClient {
    * Returns element reference number and processing code
    */
   async sendInvoice(invoiceXml: string): Promise<SendInvoiceResult> {
-    const token = await this.ensureValidSession();
+    await this.ensureValidSession();
 
     ksefLogger.info('📤 Wysyłam fakturę do KSeF');
 
-    const result = await this.executeWithRetry(
-      async () => {
-        // TODO: Implement actual invoice sending - this is a simplified example
-        const response = await this.httpClient.post<SendInvoiceResult>(
-          `/sessions/${this.sessionState!.referenceNumber}/invoices`,
-          invoiceXml,
-          {
-            headers: {
-              ...this.getAuthHeaders(),
-              'Content-Type': 'application/xml',
-            },
-          }
-        );
-
-        if (!response.data || !response.data.elementReferenceNumber) {
-          throw new KsefApiError('Invalid send response', 'INVALID_RESPONSE');
-        }
-
-        return response.data;
-      },
-      'sendInvoice'
+    throw new KsefApiError(
+      'Interactive invoice send is not implemented (requires sessions/online flow per documentation)',
+      'NOT_IMPLEMENTED'
     );
-
-    ksefLogger.info('📤 Faktura wysłana', { elementReferenceNumber: result.elementReferenceNumber });
-    return result;
   }
 
   /**

@@ -10,7 +10,7 @@
     "build": "tsc",
     "start": "tsx src/index.ts",
     "sync": "tsx src/index.ts sync",
-    "test": "vitest",
+    "test": "vitest --run",
     "test:ui": "vitest --ui",
     "test:coverage": "vitest --coverage",
     "lint": "eslint src/ tests/",

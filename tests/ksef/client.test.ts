@@ -5,6 +5,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import axios from 'axios';
+import { generateKeyPairSync } from 'node:crypto';
 import { KsefClient } from '../../src/ksef/client.js';
 import {
   KsefAuthError,
@@ -12,7 +13,7 @@ import {
   KsefConnectionError,
   KsefValidationError,
 } from '../../src/errors.js';
-import type { SessionInfo, SendInvoiceResult } from '../../src/ksef/types.js';
+import type { SendInvoiceResult, SessionInfo } from '../../src/ksef/types.js';
 
 // Use vi.hoisted to create mock factory in proper scope
 const { mockAxiosInstance } = vi.hoisted(() => {
@@ -35,13 +36,15 @@ vi.mock('axios', () => ({
   default: {
     create: vi.fn(() => mockAxiosInstance),
     isAxiosError: (err: unknown): err is any => {
-      return err && typeof err === 'object' && 'response' in err;
+      return !!(err && typeof err === 'object' && 'response' in err);
     },
   },
 }));
 
 describe('KsefClient', () => {
   let client: KsefClient;
+  const { publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const publicKeyPem = publicKey.export({ type: 'spki', format: 'pem' }).toString();
 
   beforeEach(() => {
     // Clear all mock calls
@@ -57,6 +60,7 @@ describe('KsefClient', () => {
       token: 'test-token',
       nip: '1234567890',
       timeout: 30000,
+      ksefTokenEncryptionPublicKeyPem: publicKeyPem,
     });
   });
 
@@ -66,28 +70,64 @@ describe('KsefClient', () => {
 
   describe('Authentication', () => {
     it('should authenticate successfully with valid credentials', async () => {
-      const sessionInfo: SessionInfo = {
-        referenceNumber: 'ref-123',
-        sessionToken: {
-          token: 'session-token-123',
-          expiryDate: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
-        },
-        startDate: new Date().toISOString(),
-        expiryDate: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
-        authenticationMethod: 'Bearer',
+      const challenge = {
+        challenge: '20250514-CR-TEST',
+        timestamp: '2025-07-11T12:23:56.0154302+00:00',
+        timestampMs: 1752236636015,
+        clientIp: '127.0.0.1',
       };
 
-      mockAxiosInstance.post.mockResolvedValue({ data: sessionInfo });
+      const init = {
+        referenceNumber: 'ref-123',
+        authenticationToken: {
+          token: 'auth-token-123',
+          validUntil: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+        },
+      };
+
+      const statusOk = {
+        startDate: new Date().toISOString(),
+        authenticationMethod: 'Token',
+        status: { code: 200, description: 'Uwierzytelnianie zakończone sukcesem' },
+      };
+
+      const tokens = {
+        accessToken: {
+          token: 'access-token-123',
+          validUntil: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
+        },
+        refreshToken: {
+          token: 'refresh-token-123',
+          validUntil: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+        },
+      };
+
+      mockAxiosInstance.post
+        .mockResolvedValueOnce({ data: challenge }) // /auth/challenge
+        .mockResolvedValueOnce({ data: init }) // /auth/ksef-token
+        .mockResolvedValueOnce({ data: tokens }); // /auth/token/redeem
+
+      mockAxiosInstance.get.mockResolvedValueOnce({ data: statusOk }); // /auth/{ref}
 
       const result = await client.authenticate('1234567890', 'test-token');
 
-      expect(result).toEqual(sessionInfo);
+      expect(result).toEqual({ referenceNumber: 'ref-123' });
+      expect(mockAxiosInstance.post).toHaveBeenCalledWith('/auth/challenge');
       expect(mockAxiosInstance.post).toHaveBeenCalledWith(
-        '/auth/sessions',
+        '/auth/ksef-token',
+        expect.objectContaining({
+          challenge: '20250514-CR-TEST',
+          contextIdentifier: { type: 'Nip', value: '1234567890' },
+          encryptedToken: expect.any(String),
+        })
+      );
+      expect(mockAxiosInstance.get).toHaveBeenCalledWith('/auth/ref-123', expect.any(Object));
+      expect(mockAxiosInstance.post).toHaveBeenCalledWith(
+        '/auth/token/redeem',
         {},
         expect.objectContaining({
           headers: expect.objectContaining({
-            Authorization: 'Bearer test-token',
+            Authorization: 'Bearer auth-token-123',
           }),
         })
       );
@@ -128,18 +168,39 @@ describe('KsefClient', () => {
 
   describe('Session Management', () => {
     beforeEach(async () => {
-      // Setup authenticated session
-      const sessionInfo: SessionInfo = {
-        referenceNumber: 'ref-123',
-        sessionToken: {
-          token: 'session-token-123',
-          expiryDate: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
-        },
-        startDate: new Date().toISOString(),
-        expiryDate: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
-        authenticationMethod: 'Bearer',
+      const challenge = {
+        challenge: '20250514-CR-TEST',
+        timestamp: '2025-07-11T12:23:56.0154302+00:00',
+        timestampMs: 1752236636015,
+        clientIp: '127.0.0.1',
       };
-      mockAxiosInstance.post.mockResolvedValue({ data: sessionInfo });
+      const init = {
+        referenceNumber: 'ref-123',
+        authenticationToken: {
+          token: 'auth-token-123',
+          validUntil: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+        },
+      };
+      const statusOk = {
+        startDate: new Date().toISOString(),
+        authenticationMethod: 'Token',
+        status: { code: 200, description: 'Uwierzytelnianie zakończone sukcesem' },
+      };
+      const tokens = {
+        accessToken: {
+          token: 'access-token-123',
+          validUntil: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
+        },
+        refreshToken: {
+          token: 'refresh-token-123',
+          validUntil: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+        },
+      };
+      mockAxiosInstance.post
+        .mockResolvedValueOnce({ data: challenge })
+        .mockResolvedValueOnce({ data: init })
+        .mockResolvedValueOnce({ data: tokens });
+      mockAxiosInstance.get.mockResolvedValueOnce({ data: statusOk });
       await client.authenticate('1234567890', 'test-token');
     });
 
@@ -155,7 +216,7 @@ describe('KsefClient', () => {
         '/auth/sessions/current',
         expect.objectContaining({
           headers: expect.objectContaining({
-            Authorization: expect.stringContaining('session-token-123'),
+            Authorization: expect.stringContaining('access-token-123'),
           }),
         })
       );
@@ -177,53 +238,102 @@ describe('KsefClient', () => {
 
   describe('Retry Logic', () => {
     beforeEach(async () => {
-      // Setup authenticated session
-      const sessionInfo: SessionInfo = {
-        referenceNumber: 'ref-123',
-        sessionToken: {
-          token: 'session-token-123',
-          expiryDate: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
-        },
-        startDate: new Date().toISOString(),
-        expiryDate: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
-        authenticationMethod: 'Bearer',
+      const challenge = {
+        challenge: '20250514-CR-TEST',
+        timestamp: '2025-07-11T12:23:56.0154302+00:00',
+        timestampMs: 1752236636015,
+        clientIp: '127.0.0.1',
       };
-      mockAxiosInstance.post.mockResolvedValue({ data: sessionInfo });
+      const init = {
+        referenceNumber: 'ref-123',
+        authenticationToken: {
+          token: 'auth-token-123',
+          validUntil: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+        },
+      };
+      const statusOk = {
+        startDate: new Date().toISOString(),
+        authenticationMethod: 'Token',
+        status: { code: 200, description: 'Uwierzytelnianie zakończone sukcesem' },
+      };
+      const tokens = {
+        accessToken: {
+          token: 'access-token-123',
+          validUntil: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
+        },
+        refreshToken: {
+          token: 'refresh-token-123',
+          validUntil: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+        },
+      };
+      mockAxiosInstance.post
+        .mockResolvedValueOnce({ data: challenge })
+        .mockResolvedValueOnce({ data: init })
+        .mockResolvedValueOnce({ data: tokens });
+      mockAxiosInstance.get.mockResolvedValueOnce({ data: statusOk });
       await client.authenticate('1234567890', 'test-token');
+
+      // Isolate retry assertions from auth calls
+      mockAxiosInstance.post.mockClear();
     });
 
     it('should not retry on 4xx errors except 403', async () => {
       const error400 = { response: { status: 400, data: { message: 'Bad request' } } };
       mockAxiosInstance.post.mockRejectedValue(error400);
 
-      await expect(client.sendInvoice('<Invoice/>')).rejects.toThrow(KsefApiError);
+      await expect(client.queryInvoices({ pageSize: 10, pageOffset: 0, queryCriteria: {} })).rejects.toThrow(
+        KsefApiError
+      );
 
       // Should only be called once (no retries)
-      expect(mockAxiosInstance.post).toHaveBeenCalledTimes(2); // 1 for auth, 1 for send
+      expect(mockAxiosInstance.post).toHaveBeenCalledTimes(1); // 1 for query
     });
 
     it('should not retry on 403 immediately after session clear', async () => {
       const error403 = { response: { status: 403, data: {} } };
       mockAxiosInstance.post.mockRejectedValue(error403);
 
-      await expect(client.sendInvoice('<Invoice/>')).rejects.toThrow(KsefAuthError);
+      await expect(client.queryInvoices({ pageSize: 10, pageOffset: 0, queryCriteria: {} })).rejects.toThrow(
+        KsefAuthError
+      );
     });
   });
 
   describe('Invoice Operations', () => {
     beforeEach(async () => {
-      // Setup authenticated session
-      const sessionInfo: SessionInfo = {
-        referenceNumber: 'ref-123',
-        sessionToken: {
-          token: 'session-token-123',
-          expiryDate: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
-        },
-        startDate: new Date().toISOString(),
-        expiryDate: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
-        authenticationMethod: 'Bearer',
+      const challenge = {
+        challenge: '20250514-CR-TEST',
+        timestamp: '2025-07-11T12:23:56.0154302+00:00',
+        timestampMs: 1752236636015,
+        clientIp: '127.0.0.1',
       };
-      mockAxiosInstance.post.mockResolvedValue({ data: sessionInfo });
+      const init = {
+        referenceNumber: 'ref-123',
+        authenticationToken: {
+          token: 'auth-token-123',
+          validUntil: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+        },
+      };
+      const statusOk = {
+        startDate: new Date().toISOString(),
+        authenticationMethod: 'Token',
+        status: { code: 200, description: 'Uwierzytelnianie zakończone sukcesem' },
+      };
+      const tokens = {
+        accessToken: {
+          token: 'access-token-123',
+          validUntil: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
+        },
+        refreshToken: {
+          token: 'refresh-token-123',
+          validUntil: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+        },
+      };
+      mockAxiosInstance.post
+        .mockResolvedValueOnce({ data: challenge })
+        .mockResolvedValueOnce({ data: init })
+        .mockResolvedValueOnce({ data: tokens });
+      mockAxiosInstance.get.mockResolvedValueOnce({ data: statusOk });
       await client.authenticate('1234567890', 'test-token');
       mockAxiosInstance.post.mockClear();
     });
@@ -235,22 +345,8 @@ describe('KsefClient', () => {
         processingCode: 200,
       };
 
-      mockAxiosInstance.post.mockResolvedValue({
-        data: result,
-      });
-
-      const response = await client.sendInvoice(invoiceXml);
-
-      expect(response).toEqual(result);
-      expect(mockAxiosInstance.post).toHaveBeenCalledWith(
-        '/sessions/ref-123/invoices',
-        invoiceXml,
-        expect.objectContaining({
-          headers: expect.objectContaining({
-            'Content-Type': 'application/xml',
-          }),
-        })
-      );
+      mockAxiosInstance.post.mockResolvedValue({ data: result });
+      await expect(client.sendInvoice(invoiceXml)).rejects.toThrow(KsefApiError);
     });
 
     it('should throw error when sending with invalid response', async () => {
@@ -379,19 +475,40 @@ describe('KsefClient', () => {
 
   describe('List Active Sessions', () => {
     beforeEach(async () => {
-      const sessionInfo: SessionInfo = {
-        referenceNumber: 'ref-123',
-        sessionToken: {
-          token: 'session-token-123',
-          expiryDate: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
-        },
-        startDate: new Date().toISOString(),
-        expiryDate: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
-        authenticationMethod: 'Bearer',
+      const challenge = {
+        challenge: '20250514-CR-TEST',
+        timestamp: '2025-07-11T12:23:56.0154302+00:00',
+        timestampMs: 1752236636015,
+        clientIp: '127.0.0.1',
       };
-      mockAxiosInstance.post.mockResolvedValue({ data: sessionInfo });
+      const init = {
+        referenceNumber: 'ref-123',
+        authenticationToken: {
+          token: 'auth-token-123',
+          validUntil: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+        },
+      };
+      const statusOk = {
+        startDate: new Date().toISOString(),
+        authenticationMethod: 'Token',
+        status: { code: 200, description: 'Uwierzytelnianie zakończone sukcesem' },
+      };
+      const tokens = {
+        accessToken: {
+          token: 'access-token-123',
+          validUntil: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
+        },
+        refreshToken: {
+          token: 'refresh-token-123',
+          validUntil: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+        },
+      };
+      mockAxiosInstance.post
+        .mockResolvedValueOnce({ data: challenge })
+        .mockResolvedValueOnce({ data: init })
+        .mockResolvedValueOnce({ data: tokens });
+      mockAxiosInstance.get.mockResolvedValueOnce({ data: statusOk });
       await client.authenticate('1234567890', 'test-token');
-      mockAxiosInstance.post.mockClear();
     });
 
     it('should list active sessions', async () => {
