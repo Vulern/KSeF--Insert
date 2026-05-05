@@ -20,6 +20,73 @@ export interface SessionToken {
 }
 
 /**
+ * Generic token returned by KSeF auth endpoints
+ */
+export interface AuthToken {
+  token: string;
+  validUntil: string;
+}
+
+export interface AuthenticationChallengeResponse {
+  challenge: string;
+  timestamp: string;
+  timestampMs: number;
+  clientIp?: string;
+}
+
+export type ContextIdentifierType = 'Nip' | 'InternalId' | 'NipVatUe';
+
+export interface ContextIdentifier {
+  type: ContextIdentifierType;
+  value: string;
+}
+
+export interface InitTokenAuthenticationRequest {
+  challenge: string;
+  contextIdentifier: ContextIdentifier;
+  encryptedToken: string;
+  authorizationPolicy?: unknown;
+}
+
+export interface AuthenticationInitResponse {
+  referenceNumber: string;
+  authenticationToken: AuthToken;
+}
+
+export interface AuthenticationOperationStatus {
+  code: number;
+  description: string;
+  details?: string[];
+}
+
+export interface AuthenticationOperationStatusResponse {
+  startDate: string;
+  authenticationMethod: string;
+  status: AuthenticationOperationStatus;
+}
+
+export interface AuthenticationTokensResponse {
+  accessToken: AuthToken;
+  refreshToken: AuthToken;
+}
+
+export interface AuthenticationTokenRefreshResponse {
+  accessToken: AuthToken;
+}
+
+export type PublicKeyCertificateUsage = 'KsefTokenEncryption' | 'SymmetricKeyEncryption';
+
+export interface PublicKeyCertificate {
+  /**
+   * Base64-encoded DER certificate
+   */
+  certificate: string;
+  validFrom: string;
+  validTo: string;
+  usage: PublicKeyCertificateUsage[];
+}
+
+/**
  * Authentication response
  */
 export interface AuthenticationResponse {
@@ -119,6 +186,11 @@ export interface KsefClientConfig {
   token?: string;
   nip?: string;
   timeout?: number;
+  /**
+   * Optional PEM public key override (primarily for tests/offline).
+   * If set, client will not fetch `/security/public-key-certificates`.
+   */
+  ksefTokenEncryptionPublicKeyPem?: string;
 }
 
 /**
@@ -134,8 +206,13 @@ export interface RetryConfig {
  * Session state tracking
  */
 export interface SessionState {
-  sessionToken: string;
+  /**
+   * Reference number of the authentication operation (AU-...).
+   */
   referenceNumber: string;
-  expiryDate: Date;
+  accessToken: string;
+  accessTokenValidUntil: Date;
+  refreshToken: string;
+  refreshTokenValidUntil: Date;
   createdAt: Date;
 }
