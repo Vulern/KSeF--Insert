@@ -107,28 +107,27 @@ async function syncAction(options: SyncOptions): Promise<void> {
 
     const invoices: any[] = [];
     try {
-      // Simple query for now - in production would paginate
-      const queryParams: any = {
-        pageSize: 100,
-        pageNumber: 1,
+      const dateRange = {
+        dateType: 'Invoicing' as const,
+        from: startDate.toISOString(),
+        to: endDate.toISOString(),
       };
 
-      // Add date filters if available
-      if (startDate) queryParams.fromDate = startDate.toISOString().split('T')[0];
-      if (endDate) queryParams.toDate = endDate.toISOString().split('T')[0];
+      const subjectTypes: Array<'Subject1' | 'Subject2'> =
+        invoiceType === 'zakup'    ? ['Subject2'] :
+        invoiceType === 'sprzedaz' ? ['Subject1'] :
+        /* wszystkie */              ['Subject1', 'Subject2'];
 
-      // Add invoice type filter
-      if (invoiceType === 'zakup') {
-        queryParams.subjectType = 'subject_type.buyer';
-      } else if (invoiceType === 'sprzedaz') {
-        queryParams.subjectType = 'subject_type.seller';
-      }
-      // If 'wszystkie', don't filter by type
-
-      // Query invoices
-      const result = await ksefClient.queryInvoices(queryParams);
-      if (result.invoiceHeaderList) {
-        invoices.push(...result.invoiceHeaderList);
+      for (const subjectType of subjectTypes) {
+        const result = await ksefClient.queryInvoices({
+          pageSize: 100,
+          pageOffset: 0,
+          subjectType,
+          dateRange,
+        });
+        if (result.invoices) {
+          invoices.push(...result.invoices);
+        }
       }
       totalQueried = invoices.length;
       querySpinner.succeed(
@@ -150,7 +149,7 @@ async function syncAction(options: SyncOptions): Promise<void> {
     let invoicesToDownload = invoices;
     if (!force) {
       invoicesToDownload = invoices.filter((inv) => {
-        const isDuplicate = fileManager['indexTracker'].isAlreadyDownloaded(inv.ksefReferenceNumber);
+        const isDuplicate = fileManager['indexTracker'].isAlreadyDownloaded(inv.ksefNumber as string ?? '');
         if (isDuplicate) {
           totalSkipped++;
         }
@@ -182,16 +181,22 @@ async function syncAction(options: SyncOptions): Promise<void> {
     for (const invoice of invoicesToDownload) {
       try {
         // Get invoice XML as string
-        const invoiceData = await ksefClient.getInvoice(invoice.ksefReferenceNumber);
+        const invoiceData = await ksefClient.getInvoice(invoice.ksefNumber as string);
 
         if (!invoiceData || !invoiceData.content) {
           throw new Error('Empty XML response');
         }
 
-        // Save to disk
+        // Save to disk — map API field ksefNumber → storage field ksefReferenceNumber
         const saveResult = await fileManager.saveInvoice({
           xml: invoiceData.content,
-          header: invoice,
+          header: {
+            ksefReferenceNumber: invoice.ksefNumber as string,
+            invoicingDate: invoice.invoicingDate as string | undefined,
+            issueDate: invoice.issueDate as string | undefined,
+            sellerNip: (invoice.seller as Record<string, unknown>)?.nip as string | undefined,
+            buyerNip: (invoice.buyer as Record<string, unknown>)?.nip as string | undefined,
+          },
         });
 
         if (!saveResult.alreadyExisted) {
@@ -203,7 +208,7 @@ async function syncAction(options: SyncOptions): Promise<void> {
         totalErrors++;
         const errorMsg =
           error instanceof Error ? error.message : 'Unknown error';
-        errors.push({ invoiceId: invoice.ksefReferenceNumber, error: errorMsg });
+        errors.push({ invoiceId: invoice.ksefNumber as string, error: errorMsg });
       }
 
       tracker.increment();

@@ -386,24 +386,28 @@ export function setupApiRoutes(app: Hono): void {
             // Query invoices
             sendProgress({ status: 'Wyszukiwanie faktur...' });
 
-            const subjectType =
-              type === 'wszystkie'
-                ? undefined
-                : type === 'sprzedaz'
-                  ? 'subject_type.seller'
-                  : 'subject_type.buyer';
+            const subjectTypes: Array<'Subject1' | 'Subject2'> =
+              type === 'sprzedaz' ? ['Subject1'] :
+              type === 'zakup'    ? ['Subject2'] :
+              /* wszystkie */       ['Subject1', 'Subject2'];
 
-            const queryParams = {
-              pageSize: 100,
-              queryCriteria: {
-                subjectType,
-                dateFrom,
-                dateTo,
-              } as Record<string, unknown>,
+            const dateRange = {
+              dateType: 'Invoicing' as const,
+              from: new Date(dateFrom).toISOString(),
+              to: new Date(dateTo).toISOString(),
             };
 
-            const result = await client.queryInvoices(queryParams);
-            const invoices = result.invoiceHeaderList || [];
+            const allInvoices: Array<Record<string, unknown>> = [];
+            for (const subjectType of subjectTypes) {
+              const result = await client.queryInvoices({
+                pageSize: 100,
+                pageOffset: 0,
+                subjectType,
+                dateRange,
+              });
+              allInvoices.push(...((result.invoices || []) as Array<Record<string, unknown>>));
+            }
+            const invoices = allInvoices;
 
             // Download and save invoices
             let downloaded = 0;
@@ -415,7 +419,7 @@ export function setupApiRoutes(app: Hono): void {
 
               try {
                 // Get invoice content
-                const ksefRef = invoice.ksefReferenceNumber as string;
+                const ksefRef = invoice.ksefNumber as string;
                 const invoiceData = await client.getInvoice(ksefRef);
 
                 if (!invoiceData || !invoiceData.content) {
@@ -427,8 +431,8 @@ export function setupApiRoutes(app: Hono): void {
                   ksefReferenceNumber: ksefRef,
                   invoicingDate: (invoice.invoicingDate as string) || '',
                   issueDate: (invoice.issueDate as string) || '',
-                  subjectType: subjectType as string,
-                  nip: (invoice.sellerNip || invoice.buyerNip) as string,
+                  subjectType: invoice.subjectType as string,
+                  nip: ((invoice.seller as Record<string,unknown>)?.nip || (invoice.buyer as Record<string,unknown>)?.nip) as string,
                 };
 
                 // Save invoice

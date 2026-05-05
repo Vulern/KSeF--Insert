@@ -599,8 +599,10 @@ export class KsefClient {
           throw new KsefApiError('Empty invoice response', 'EMPTY_RESPONSE');
         }
 
-        // Parse XML response
-        return parseKsefXml(response.data);
+        // Keep raw XML as `content` so callers can save it directly to disk.
+        // Merge with parsed fields (dates etc.) for convenience.
+        const parsed = parseKsefXml(response.data);
+        return { ...parsed, content: response.data };
       },
       'getInvoice'
     );
@@ -618,19 +620,21 @@ export class KsefClient {
     const pageSize = Math.min(params.pageSize || 100, 100);
     const pageOffset = params.pageOffset || 0;
 
-    ksefLogger.info('📋 Query faktur', { pageSize, pageOffset });
+    ksefLogger.info('📋 Query faktur', { pageSize, pageOffset, subjectType: params.subjectType });
 
     const result = await this.executeWithRetry(
       async () => {
         const response = await this.httpClient.post<InvoicePage>(
           '/invoices/query/metadata',
+          // Body: InvoiceQueryFilters — subjectType + dateRange are required
           {
-            pageSize,
-            pageOffset,
-            queryCriteria: params.queryCriteria || {},
+            subjectType: params.subjectType,
+            dateRange: params.dateRange,
           },
           {
             headers: this.getAuthHeaders(),
+            // pageSize / pageOffset go in the URL, not the body
+            params: { pageSize, pageOffset },
           }
         );
 
