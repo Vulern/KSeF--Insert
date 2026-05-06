@@ -20,14 +20,16 @@ const __dirname = dirname(__filename);
 export function createApp(): Hono {
   const app = new Hono();
 
-  // Request logging middleware
+  // Request logging middleware — polling/health endpoints logged at debug to avoid noise
+  const SILENT_PATHS = new Set(['/api/status', '/api/health']);
   app.use('*', async (c, next) => {
     const start = Date.now();
     try {
       await next();
     } finally {
       const responseTime = Date.now() - start;
-      serverLogger.info('HTTP request', {
+      const logFn = SILENT_PATHS.has(c.req.path) ? serverLogger.debug.bind(serverLogger) : serverLogger.info.bind(serverLogger);
+      logFn('HTTP request', {
         method: c.req.method,
         path: c.req.path,
         statusCode: c.res.status,

@@ -34,12 +34,12 @@ export class IndexTracker {
       const content = await fs.readFile(this.indexPath, 'utf-8');
       this.index = JSON.parse(content);
       this.loaded = true;
-      logger.info(`Loaded invoice index: ${Object.keys(this.index.invoices).length} entries`);
+      logger.debug(`Loaded invoice index: ${Object.keys(this.index.invoices).length} entries`);
       return this.index;
     } catch (error) {
       if ((error as any)?.code === 'ENOENT') {
         // Index doesn't exist yet - create empty one
-        logger.info('Index file does not exist, creating new index');
+        logger.debug('Index file does not exist, creating new index');
         this.loaded = true;
         return this.index;
       }
@@ -74,7 +74,7 @@ export class IndexTracker {
       // Atomic rename
       await fs.rename(tempPath, this.indexPath);
 
-      logger.info(`Saved invoice index: ${Object.keys(this.index.invoices).length} entries`);
+      logger.debug(`Saved invoice index: ${Object.keys(this.index.invoices).length} entries`);
     } catch (error) {
       logger.error('Failed to save index', error);
       throw new KsefValidationError(
