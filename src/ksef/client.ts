@@ -45,13 +45,20 @@ import type {
 const DEFAULT_RETRY_CONFIG: RetryConfig = {
   maxRetries: 3,
   baseDelayMs: 1000,
-  maxDelayMs: 9000,
+  maxDelayMs: 10000,
 };
 
 /**
  * HTTP status codes that should trigger retry
  */
 const RETRYABLE_STATUS_CODES = [408, 429, 500, 502, 503, 504];
+
+/**
+ * How many times to retry a 429 rate-limit response.
+ * Higher than the default maxRetries because each attempt honours the
+ * full Retry-After wait given by KSeF, so extra retries are safe.
+ */
+const RATE_LIMIT_MAX_RETRIES = 10;
 
 const DEFAULT_AUTH_POLL_CONFIG = {
   maxAttempts: 60,
@@ -268,7 +275,7 @@ export class KsefClient {
         const responseTime = startTime ? Date.now() - startTime : undefined;
 
         if (error.response) {
-          ksefLogger.error('KSeF API error', {
+          ksefLogger.error(`KSeF API error ${error.response.status} ${method} ${url}`, {
             method,
             url,
             statusCode: error.response.status,
@@ -276,7 +283,7 @@ export class KsefClient {
             body: this.sanitizeBodyForLogs(error.response.data, error.response.headers?.['content-type']),
           });
         } else if (error.code) {
-          ksefLogger.error('KSeF connection error', {
+          ksefLogger.error(`KSeF connection error [${error.code}] ${method} ${url}`, {
             method,
             url,
             error: error.code,
@@ -284,7 +291,7 @@ export class KsefClient {
             responseTime,
           });
         } else {
-          ksefLogger.error('KSeF request error', {
+          ksefLogger.error(`KSeF request error ${method} ${url}: ${error?.message}`, {
             method,
             url,
             message: error?.message,
@@ -307,32 +314,58 @@ export class KsefClient {
   }
 
   /**
-   * Calculate exponential backoff delay
+   * Calculate delay before the next retry.
+   *
+   * For 429 responses the KSeF Retry-After header is honoured in full —
+   * it is intentionally NOT capped by maxDelayMs because shortening the
+   * wait would just trigger another 429 immediately (KSeF uses a sliding
+   * window; repeated violations extend the block duration).
+   * If no Retry-After is present a conservative 60 s fallback is used.
+   *
+   * All other retriable errors use standard exponential backoff capped
+   * by maxDelayMs.
    */
-  private calculateBackoffDelay(attempt: number): number {
+  private calculateBackoffDelay(attempt: number, error?: unknown): number {
+    if (axios.isAxiosError(error) && error.response?.status === 429) {
+      const retryAfter = error.response.headers?.['retry-after'];
+      if (retryAfter) {
+        const seconds = Number(retryAfter);
+        if (!Number.isNaN(seconds) && seconds > 0) {
+          return seconds * 1000;
+        }
+      }
+      return 60_000;
+    }
+
+    const maxDelay = this.retryConfig.maxDelayMs ?? 10000;
     const exponentialDelay = Math.pow(3, attempt) * this.retryConfig.baseDelayMs;
-    const maxDelay = this.retryConfig.maxDelayMs || exponentialDelay;
     return Math.min(exponentialDelay, maxDelay);
   }
 
   /**
-   * Check if response should be retried
+   * Check if a failed request should be retried.
+   *
+   * 429 rate-limit responses use a separate, higher retry ceiling
+   * (RATE_LIMIT_MAX_RETRIES) because each attempt already waits the full
+   * Retry-After duration dictated by KSeF.
    */
   private shouldRetry(
     error: AxiosError | unknown,
     attempt: number
   ): boolean {
-    if (attempt >= this.retryConfig.maxRetries) {
-      return false;
-    }
-
     if (axios.isAxiosError(error)) {
-      // Don't retry 4xx errors except 403 (session expired) and 408 (timeout)
+      if (error.response?.status === 429) {
+        return attempt < RATE_LIMIT_MAX_RETRIES;
+      }
+
+      if (attempt >= this.retryConfig.maxRetries) {
+        return false;
+      }
+
       if (error.response?.status) {
         return RETRYABLE_STATUS_CODES.includes(error.response.status);
       }
 
-      // Retry on connection errors
       if (
         error.code === 'ECONNABORTED' ||
         error.code === 'ECONNREFUSED' ||
@@ -347,15 +380,20 @@ export class KsefClient {
   }
 
   /**
-   * Execute request with retry logic
+   * Execute request with retry logic.
+   *
+   * Uses a while loop so that 429 responses (which have their own higher
+   * retry ceiling via RATE_LIMIT_MAX_RETRIES) are not cut short by the
+   * default maxRetries counter that governs other error types.
    */
   private async executeWithRetry<T>(
     operation: () => Promise<T>,
     operationName: string
   ): Promise<T> {
     let lastError: Error | unknown;
+    let attempt = 0;
 
-    for (let attempt = 0; attempt <= this.retryConfig.maxRetries; attempt++) {
+    while (true) {
       try {
         return await operation();
       } catch (error) {
@@ -365,20 +403,35 @@ export class KsefClient {
           throw this.handleError(error, operationName);
         }
 
-        const delay = this.calculateBackoffDelay(attempt);
-        ksefLogger.warn('Request retry', {
-          attempt: attempt + 1,
-          maxAttempts: this.retryConfig.maxRetries + 1,
-          operationName,
-          delayMs: delay,
-          error: error instanceof Error ? error.message : String(error),
-        });
+        const delay = this.calculateBackoffDelay(attempt, error);
+        const is429 = axios.isAxiosError(error) && error.response?.status === 429;
+        const retryAfterSec = is429
+          ? (Number(error.response?.headers?.['retry-after']) || null)
+          : null;
+
+        if (is429) {
+          ksefLogger.warn('⏱️ Limit API KSeF (429) — oczekuję zgodnie z Retry-After', {
+            attempt: attempt + 1,
+            maxAttempts: RATE_LIMIT_MAX_RETRIES,
+            operationName,
+            retryAfterSeconds: retryAfterSec,
+            delayMs: delay,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        } else {
+          ksefLogger.warn('🔄 Retry żądania', {
+            attempt: attempt + 1,
+            maxAttempts: this.retryConfig.maxRetries + 1,
+            operationName,
+            delayMs: delay,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
 
         await new Promise((resolve) => setTimeout(resolve, delay));
+        attempt++;
       }
     }
-
-    throw this.handleError(lastError, operationName);
   }
 
   /**
@@ -396,6 +449,22 @@ export class KsefClient {
           this.sessionState = null; // Clear session on 403
         }
         return new KsefAuthError(message, 'SESSION_EXPIRED', status);
+      }
+
+      if (status === 429) {
+        const retryAfterHeader = axios.isAxiosError(error)
+          ? error.response?.headers?.['retry-after']
+          : undefined;
+        const retryAfterSec = retryAfterHeader ? Number(retryAfterHeader) : null;
+        const waitHint =
+          retryAfterSec && !Number.isNaN(retryAfterSec)
+            ? ` Wymagane oczekiwanie: ${retryAfterSec}s.`
+            : '';
+        return new KsefConnectionError(
+          `Przekroczono limit żądań API KSeF (429) dla operacji "${operationName}".${waitHint} Spróbuj ponownie później.`,
+          'RETRY_EXHAUSTED',
+          429
+        );
       }
 
       if (RETRYABLE_STATUS_CODES.includes(status || 0)) {
@@ -599,8 +668,10 @@ export class KsefClient {
           throw new KsefApiError('Empty invoice response', 'EMPTY_RESPONSE');
         }
 
-        // Parse XML response
-        return parseKsefXml(response.data);
+        // Keep raw XML as `content` so callers can save it directly to disk.
+        // Merge with parsed fields (dates etc.) for convenience.
+        const parsed = parseKsefXml(response.data);
+        return { ...parsed, content: response.data };
       },
       'getInvoice'
     );
@@ -618,19 +689,21 @@ export class KsefClient {
     const pageSize = Math.min(params.pageSize || 100, 100);
     const pageOffset = params.pageOffset || 0;
 
-    ksefLogger.info('📋 Query faktur', { pageSize, pageOffset });
+    ksefLogger.info('📋 Query faktur', { pageSize, pageOffset, subjectType: params.subjectType });
 
     const result = await this.executeWithRetry(
       async () => {
         const response = await this.httpClient.post<InvoicePage>(
           '/invoices/query/metadata',
+          // Body: InvoiceQueryFilters — subjectType + dateRange are required
           {
-            pageSize,
-            pageOffset,
-            queryCriteria: params.queryCriteria || {},
+            subjectType: params.subjectType,
+            dateRange: params.dateRange,
           },
           {
             headers: this.getAuthHeaders(),
+            // pageSize / pageOffset go in the URL, not the body
+            params: { pageSize, pageOffset },
           }
         );
 

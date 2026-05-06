@@ -52,8 +52,7 @@ function createConsoleTransport(): any {
       colorize: true,
       translateTime: 'HH:MM:ss',
       ignore: 'pid,hostname',
-      // NOTE: options passed to pino.transport must be structured-cloneable (no functions)
-      messageFormat: '{levelLabel} [{module}] {msg}',
+      messageFormat: '[{module}] {msg}',
     },
   });
 }
@@ -113,6 +112,9 @@ export function createLogger(opts: CreateLoggerOptions = {}): AppLogger {
     level,
     base: undefined,
     timestamp: pino.stdTimeFunctions.isoTime,
+    formatters: {
+      level: (label) => ({ level: label }),
+    },
   };
 
   // If no outputs enabled, avoid crashing: fallback to console pretty

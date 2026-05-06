@@ -44,7 +44,7 @@ export class InvoiceFileManager {
     const indexPath = path.join(this.config.outputDir, '.index.json');
     this.indexTracker = new IndexTracker(indexPath);
 
-    storageLogger.info('💾 FileManager initialized', { outputDir: this.config.outputDir });
+    storageLogger.debug('💾 FileManager initialized', { outputDir: this.config.outputDir });
   }
 
   /**
@@ -54,7 +54,7 @@ export class InvoiceFileManager {
     try {
       // Create output directory if it doesn't exist
       await fs.mkdir(this.config.outputDir, { recursive: true });
-      storageLogger.info('📁 Utworzono/zweryfikowano katalog output', { outputDir: this.config.outputDir });
+      storageLogger.debug('📁 Utworzono/zweryfikowano katalog output', { outputDir: this.config.outputDir });
 
       // Load existing index
       await this.indexTracker.load();

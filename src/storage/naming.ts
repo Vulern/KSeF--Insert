@@ -87,8 +87,14 @@ export const generateFolderPath = (header: InvoiceHeader): string => {
   const yearMonth = `${year}-${month}`;
 
   // Determine subject type (zakup = purchase, sprzedaz = sales)
+  // KSeF returns 'subject_type.seller' / 'Subject1' for sales and 'subject_type.buyer' / 'Subject2' for purchases
   const subjectType = header.subjectType || 'zakup';
-  const folderType = subjectType.toLowerCase().includes('sprzedaz') ? 'sprzedaz' : 'zakup';
+  const st = subjectType.toLowerCase();
+  const isSales =
+    st.includes('sprzedaz') ||
+    st.includes('seller') ||
+    subjectType === 'Subject1';
+  const folderType = isSales ? 'sprzedaz' : 'zakup';
 
   return `${yearMonth}/${folderType}`;
 };

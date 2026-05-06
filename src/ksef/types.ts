@@ -128,29 +128,33 @@ export interface InvoiceMetadata {
 }
 
 /**
- * Query parameters for invoice search
+ * Query parameters for invoice search (KSeF API v2)
+ * pageSize / pageOffset are sent as URL query params.
+ * The body fields (subjectType, dateRange) map to InvoiceQueryFilters.
  */
 export interface QueryParams {
   pageSize?: number;
   pageOffset?: number;
-  queryCriteria?: {
-    subjectType?: string;
-    dateFrom?: string;
-    dateTo?: string;
-    status?: string;
-    [key: string]: unknown;
+  /** Subject1 = sprzedawca (seller), Subject2 = nabywca (buyer) */
+  subjectType: 'Subject1' | 'Subject2' | 'Subject3' | 'SubjectAuthorized';
+  dateRange: {
+    /** Issue | Invoicing | PermanentStorage */
+    dateType: 'Issue' | 'Invoicing' | 'PermanentStorage';
+    /** ISO 8601 datetime, e.g. 2026-05-01T00:00:00 */
+    from: string;
+    /** ISO 8601 datetime, e.g. 2026-05-31T23:59:59 */
+    to?: string;
   };
 }
 
 /**
- * Paginated invoice response
+ * Paginated invoice response from POST /invoices/query/metadata
  */
 export interface InvoicePage {
-  invoiceHeaderList?: InvoiceMetadata[];
-  numberOfElements?: number;
-  pageSize?: number;
-  pageOffset?: number;
-  totalElements?: number;
+  invoices?: InvoiceMetadata[];
+  hasMore?: boolean;
+  isTruncated?: boolean;
+  permanentStorageHwmDate?: string;
   [key: string]: unknown;
 }
 

@@ -912,6 +912,53 @@ body {
 }
 
 /* ============================================
+   Failed Invoice List
+   ============================================ */
+
+.failed-list {
+  margin-top: var(--space-lg);
+  border: 1px solid var(--color-error, #e53e3e);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: #fff5f5;
+}
+
+.failed-list-title {
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-error, #e53e3e);
+  background: #fed7d7;
+  border-bottom: 1px solid #feb2b2;
+}
+
+.failed-list-item {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 6px 14px;
+  font-size: 12px;
+  border-bottom: 1px solid #fed7d7;
+}
+
+.failed-list-item:last-child {
+  border-bottom: none;
+}
+
+.failed-ref {
+  font-family: var(--font-mono, monospace);
+  color: #742a2a;
+  flex-shrink: 0;
+  min-width: 0;
+}
+
+.failed-error {
+  color: #c53030;
+  flex: 1;
+  word-break: break-word;
+}
+
+/* ============================================
    Utilities
    ============================================ */
 

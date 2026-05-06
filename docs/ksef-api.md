@@ -1,12 +1,12 @@
 # 🔌 KSeF API Documentation
 
-Technical reference for KSeF REST API integration.
+Technical reference for KSeF API 2.x integration used by this project.
 
 ## Environments
 
 ### Test Environment
 ```
-Base URL: https://ksef-test.mf.gov.pl/api/v2
+Base URL: https://api-test.ksef.mf.gov.pl/v2
 Purpose: Development and testing
 Real invoices: No
 Tax reporting: No impact
@@ -14,43 +14,56 @@ Tax reporting: No impact
 
 ### Production Environment
 ```
-Base URL: https://ksef.mf.gov.pl/api/v2
+Base URL: https://api.ksef.mf.gov.pl/v2
 Purpose: Real invoice handling
 Real invoices: Yes
 Tax reporting: Yes (officially recorded)
 ⚠️ Warning: Changes affect tax records
 ```
 
+**Note**: This project is configured to use **Production** by default (unless `KSEF_BASE_URL` overrides it).
+
 ---
 
 ## Authentication
 
-### Token Requirements
-- Type: Bearer token
-- Source: KSeF web portal → Settings → Integrations
-- Expiration: 30 days (or custom)
-- Refresh: Automatic in client
-- Format: Long alphanumeric string
+### Tokens used by KSeF API 2.x
 
-### Authentication Flow
+This project starts from a **KSeF token** (system token from the portal) and exchanges it for:
+- **`accessToken` (JWT)**: used for API calls via `Authorization: Bearer {accessToken}`
+- **`refreshToken` (JWT)**: used only for refreshing access via `POST /auth/token/refresh`
+
+### Authentication Flow (KSeF token → access/refresh tokens)
 
 ```
-1. Client sends: POST /auth/login
-   Headers: {
-     "Authorization": "Bearer {token}",
-     "Content-Type": "application/json"
+1) POST /auth/challenge
+   → { challenge, timestampMs }
+
+2) GET /security/public-key-certificates
+   → pick certificate with usage "KsefTokenEncryption"
+
+3) Encrypt string: "{ksefToken}|{timestampMs}" using RSA-OAEP with SHA-256, Base64 output
+
+4) POST /auth/ksef-token
+   Body:
+   {
+     "challenge": "...",
+     "contextIdentifier": { "type": "Nip", "value": "5213000001" },
+     "encryptedToken": "base64..."
    }
-   Body: { "nip": "5213000001" }
+   → { referenceNumber, authenticationToken }
 
-2. Server responds: { "sessionId": "...", "sessionToken": {...} }
+5) Poll GET /auth/{referenceNumber} with header:
+   Authorization: Bearer {authenticationToken}
+   until status.code != 100 (in progress) and expect 200 (success)
 
-3. Client uses sessionId for subsequent requests
+6) POST /auth/token/redeem with header:
+   Authorization: Bearer {authenticationToken}
+   → { accessToken, refreshToken }
 
-4. Session expires after 30 minutes
-
-5. Client automatically refreshes when needed
-
-6. At end: POST /auth/logout (cleans up session)
+7) Use accessToken for all protected endpoints.
+   When accessToken expires, refresh:
+   POST /auth/token/refresh with header Authorization: Bearer {refreshToken}
 ```
 
 ### Error Handling
@@ -73,7 +86,7 @@ If token expires:
 ### 1. Query Invoices
 
 ```
-GET /invoices
+POST /invoices/query/metadata
 ```
 
 **Parameters:**
@@ -299,22 +312,22 @@ POST /invoices
 const axios = require('axios');
 
 const client = axios.create({
-  baseURL: 'https://ksef-test.mf.gov.pl/api/v2',
+  baseURL: 'https://api-test.ksef.mf.gov.pl/v2',
   headers: {
-    'Authorization': `Bearer ${TOKEN}`,
+    // accessToken (JWT) from /auth/token/redeem or /auth/token/refresh
+    'Authorization': `Bearer ${ACCESS_TOKEN}`,
     'Content-Type': 'application/json'
   }
 });
 
 // Query
-const response = await client.get('/invoices', {
-  params: {
-    pageSize: 100,
-    queryCriteria: {
-      subjectType: 'subject_type.buyer',
-      dateFrom: '2024-01-01',
-      dateTo: '2024-01-31'
-    }
+const response = await client.post('/invoices/query/metadata', {
+  pageSize: 100,
+  pageOffset: 0,
+  queryCriteria: {
+    subjectType: 'subject_type.buyer',
+    dateFrom: '2024-01-01',
+    dateTo: '2024-01-31'
   }
 });
 
@@ -355,7 +368,7 @@ try {
 ### Required Headers
 
 ```
-Authorization: Bearer {token}
+Authorization: Bearer {accessToken}
 Content-Type: application/json
 Accept: application/json
 ```
@@ -398,45 +411,13 @@ KSeF supports webhooks for real-time invoice notifications (optional).
 
 ---
 
-## Session Management
+## Session Management (auth sessions)
 
-### Create Session
+KSeF API exposes endpoints for listing/revoking **authentication sessions**:
+- `GET /auth/sessions`
+- `DELETE /auth/sessions/current`
 
-```
-POST /auth/login
-```
-
-**Payload:**
-```json
-{
-  "nip": "5213000001"
-}
-```
-
-**Response:**
-```json
-{
-  "sessionId": "session-123",
-  "sessionToken": {
-    "token": "token-xyz",
-    "expiryDate": "2024-01-15T11:30:00Z"
-  }
-}
-```
-
-### Refresh Session
-
-```
-POST /auth/refresh
-```
-
-**Uses**: Existing sessionId (automatic in client)
-
-### End Session
-
-```
-DELETE /auth/logout
-```
+This project does not create sessions via `/auth/sessions`. It follows the auth-token flow described above and uses `accessToken`/`refreshToken`.
 
 ---
 
@@ -444,11 +425,12 @@ DELETE /auth/logout
 
 ### Query invoices
 ```bash
-curl -X GET "https://ksef-test.mf.gov.pl/api/v2/invoices" \
-  -H "Authorization: Bearer YOUR_TOKEN" \
+curl -X POST "https://api-test.ksef.mf.gov.pl/v2/invoices/query/metadata" \
+  -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "pageSize": 10,
+    "pageOffset": 0,
     "queryCriteria": {
       "subjectType": "subject_type.buyer",
       "dateFrom": "2024-01-01",
@@ -459,59 +441,14 @@ curl -X GET "https://ksef-test.mf.gov.pl/api/v2/invoices" \
 
 ### Get invoice
 ```bash
-curl -X GET "https://ksef-test.mf.gov.pl/api/v2/invoices/ksef/1234567890-20240115-ABC123" \
-  -H "Authorization: Bearer YOUR_TOKEN"
+curl -X GET "https://api-test.ksef.mf.gov.pl/v2/invoices/ksef/1234567890-20240115-ABC123" \
+  -H "Authorization: Bearer YOUR_ACCESS_TOKEN"
 ```
 
 ---
 
 ## API Version
 
-**Current**: v2  
-**Last updated**: January 2024  
-**Docs URL**: https://ksef.mf.gov.pl/api/docs
+**Current**: v2.x  
 
-**Note**: API contracts subject to change. Monitor KSeF official documentation for updates.
-
----
-
-**References:**
-- [KSeF Official Portal](https://ksef.mf.gov.pl)
-- [UBL 2.1 Specification](http://docs.oasis-open.org/ubl/os-UBL-2.1/)
-- [FA(2) Schema Documentation](https://www.mf.gov.pl)
-
-## Autentykacja
-
-- Endpoint: `POST /api/v3/Authenticate`
-- Wymagane: NIP, token API
-- Zwraca: Session token
-
-## Operacje
-
-### Wysłanie faktury
-
-- Endpoint: `POST /api/v3/invoices/{sessionToken}`
-- Format: XML FA-2
-- Zwraca: ReferenceNumber
-
-### Pobieranie faktury
-
-- Endpoint: `GET /api/v3/invoices/{invoiceId}`
-- Zwraca: XML FA-2
-
-### Status
-
-- Endpoint: `GET /api/v3/status/{sessionToken}`
-- Zwraca: Status sesji
-
-## Kody błędów
-
-- `401` - Unauthorized
-- `400` - Bad Request
-- `500` - Server Error
-
-## TODO
-
-- [ ] Zaimplementować pełną obsługę API
-- [ ] Dodać retry logic
-- [ ] Obsługę rate limiting
+**Note**: API contracts may change; rely on the bundled OpenAPI (`ksef-docs/open-api.json`) and official KSeF documentation.

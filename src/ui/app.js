@@ -45,6 +45,7 @@ const diagRefreshBtn = document.getElementById('diagRefreshBtn');
 const diagDownloadLogsBtn = document.getElementById('diagDownloadLogsBtn');
 
 let logsEventSource = null;
+let logStreamErrors = 0;
 
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
@@ -151,6 +152,7 @@ function restartLogStream() {
   try {
     if (logsEventSource) logsEventSource.close();
   } catch {}
+  logStreamErrors = 0;
   if (logFeed) logFeed.textContent = 'Łączenie z log stream…';
   startLogStream();
 }
@@ -161,7 +163,11 @@ function formatLogLine(entry) {
   const lvl = String(entry.level || '').toUpperCase();
   const mod = entry.module ? `[${entry.module}]` : '';
   const msg = entry.msg || entry.message || '';
-  return `${t} ${lvl} ${mod} ${msg}`.trim();
+  const extras = [];
+  if (entry.ksefRef) extras.push(`ref=${entry.ksefRef}`);
+  if (entry.error)   extras.push(`error=${entry.error}`);
+  const tail = extras.length ? ` | ${extras.join(' ')}` : '';
+  return `${t} ${lvl} ${mod} ${msg}${tail}`.trim();
 }
 
 function startLogStream() {
@@ -182,17 +188,26 @@ function startLogStream() {
       buffer.push(formatLogLine(entry));
       if (buffer.length > maxLines) buffer = buffer.slice(buffer.length - maxLines);
       if (logFeed) logFeed.textContent = buffer.join('\n');
+      logStreamErrors = 0; // reset error counter on successful message
     } catch {
-      // ignore
+      // ignore non-JSON SSE data (e.g. keepalive comments arrive as empty ev.data)
     }
   };
 
   logsEventSource.onerror = () => {
-    if (logFeed && logFeed.textContent.includes('Łączenie') === false) {
-      // keep current logs
+    // If we already have log content, keep it visible during transient reconnects
+    if (logFeed && !logFeed.textContent.includes('Łączenie') && !logFeed.textContent.includes('Nie można')) {
       return;
     }
-    if (logFeed) logFeed.textContent = 'Nie można połączyć z log stream.';
+
+    logStreamErrors++;
+
+    if (logStreamErrors <= 3) {
+      // Let EventSource auto-reconnect silently for the first few attempts
+      if (logFeed) logFeed.textContent = `Łączenie z log stream… (próba ${logStreamErrors})`;
+    } else {
+      if (logFeed) logFeed.textContent = 'Nie można połączyć z log stream. Kliknij "Odśwież" aby spróbować ponownie.';
+    }
   };
 }
 
@@ -326,16 +341,67 @@ function processSSELine(line) {
     try {
       const payload = JSON.parse(line.substring(6));
 
+      if (payload.error) {
+        showSyncError(payload.error);
+        return;
+      }
       if (payload.status && progressText) progressText.textContent = payload.status;
       if (payload.total > 0 && payload.current !== undefined && progressFill) {
         const percentage = Math.round((payload.current / payload.total) * 100);
         progressFill.style.width = percentage + '%';
       }
-      if (payload.done || payload.downloaded !== undefined) showSyncResult(payload);
+      if (payload.noResults) showNoResults();
+      else if (payload.done || payload.downloaded !== undefined) showSyncResult(payload);
     } catch (e) {
       // ignore
     }
   }
+}
+
+/**
+ * Show a hard sync error (server-side failure, e.g. 429 rate limit exhausted)
+ */
+function showSyncError(message) {
+  progressContainer?.classList.add('hidden');
+  syncResult?.classList.remove('hidden');
+
+  const rHeader = document.getElementById('resultHeader');
+  const rDownloaded = document.getElementById('resultDownloaded');
+  const rSkipped = document.getElementById('resultSkipped');
+  const rErrors = document.getElementById('resultErrors');
+  const rFailedList = document.getElementById('failedList');
+
+  if (rHeader) rHeader.textContent = '❌ Błąd synchronizacji';
+  if (rDownloaded) rDownloaded.textContent = '0';
+  if (rSkipped) rSkipped.textContent = '0';
+  if (rErrors) rErrors.textContent = '1';
+  if (rFailedList) {
+    rFailedList.classList.remove('hidden');
+    rFailedList.innerHTML = `<div class="failed-list-title">❌ Błąd:</div><div class="failed-list-item"><span class="failed-error">${message}</span></div>`;
+  }
+  if (progressText) progressText.textContent = '❌ Synchronizacja nieudana';
+  showToast('Błąd synchronizacji: ' + message, 'error', 8000);
+}
+
+/**
+ * Show "no invoices found" state — distinct from a successful sync
+ */
+function showNoResults() {
+  progressContainer?.classList.add('hidden');
+  syncResult?.classList.remove('hidden');
+
+  const rHeader = document.getElementById('resultHeader');
+  const rDownloaded = document.getElementById('resultDownloaded');
+  const rSkipped = document.getElementById('resultSkipped');
+  const rErrors = document.getElementById('resultErrors');
+  const rFailedList = document.getElementById('failedList');
+
+  if (rHeader) rHeader.textContent = 'ℹ️ Brak faktur w podanym zakresie dat';
+  if (rDownloaded) rDownloaded.textContent = '0';
+  if (rSkipped) rSkipped.textContent = '0';
+  if (rErrors) rErrors.textContent = '0';
+  if (rFailedList) rFailedList.classList.add('hidden');
+  if (progressText) progressText.textContent = 'Nie znaleziono faktur.';
 }
 
 /**
@@ -348,12 +414,41 @@ function showSyncResult(result) {
   const rDownloaded = document.getElementById('resultDownloaded');
   const rSkipped = document.getElementById('resultSkipped');
   const rErrors = document.getElementById('resultErrors');
+  const rHeader = document.getElementById('resultHeader');
+  const rFailedList = document.getElementById('failedList');
+
+  const errCount = result.errors || 0;
 
   if (rDownloaded) rDownloaded.textContent = (result.downloaded || 0).toString();
   if (rSkipped) rSkipped.textContent = (result.skipped || 0).toString();
-  if (rErrors) rErrors.textContent = (result.errors || 0).toString();
+  if (rErrors) rErrors.textContent = errCount.toString();
+
+  if (rHeader) {
+    rHeader.textContent = errCount > 0
+      ? `⚠️ Synchronizacja zakończona z ${errCount} błędem${errCount === 1 ? '' : errCount < 5 ? 'i' : 'ami'}`
+      : '✅ Synchronizacja zakończona';
+  }
+
+  if (rFailedList) {
+    const failed = result.failedInvoices || [];
+    if (failed.length > 0) {
+      rFailedList.classList.remove('hidden');
+      rFailedList.innerHTML =
+        '<div class="failed-list-title">❌ Faktury z błędami:</div>' +
+        failed.map(f =>
+          `<div class="failed-list-item"><span class="failed-ref" title="${f.ksefRef}">${shorten(f.ksefRef, 35)}</span><span class="failed-error">${f.error}</span></div>`
+        ).join('');
+    } else {
+      rFailedList.classList.add('hidden');
+      rFailedList.innerHTML = '';
+    }
+  }
 
   if (progressText) progressText.textContent = 'Synchronizacja zakończona!';
+
+  if (errCount > 0) {
+    showToast(`Synchronizacja zakończona: ${errCount} faktur nie udało się pobrać`, 'error', 6000);
+  }
 }
 
 /**

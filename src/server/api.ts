@@ -28,8 +28,26 @@ function getLogDir(): string {
   return process.env.LOG_DIR || './logs';
 }
 
-function getTodayLogPath(): string {
-  return path.join(getLogDir(), `ksef-sync-${getTodayIsoDate()}.log`);
+async function getLatestTodayLogPath(): Promise<string> {
+  const logDir = getLogDir();
+  const prefix = `ksef-sync-${getTodayIsoDate()}`;
+  const fallback = path.join(logDir, `${prefix}.log`);
+  try {
+    const files = await fs.readdir(logDir);
+    const candidates = files.filter(f => f.startsWith(prefix) && f.endsWith('.log'));
+    if (candidates.length === 0) return fallback;
+    const withStats = await Promise.all(
+      candidates.map(async f => {
+        const full = path.join(logDir, f);
+        const stat = await fs.stat(full).catch(() => null);
+        return { full, mtime: stat?.mtimeMs ?? 0 };
+      })
+    );
+    withStats.sort((a, b) => b.mtime - a.mtime);
+    return withStats[0].full;
+  } catch {
+    return fallback;
+  }
 }
 
 async function readLastLogLines(params: {
@@ -37,7 +55,7 @@ async function readLastLogLines(params: {
   level?: string;
   module?: string;
 }): Promise<any[]> {
-  const logPath = getTodayLogPath();
+  const logPath = await getLatestTodayLogPath();
   const raw = await fs.readFile(logPath, 'utf-8').catch(() => '');
   if (!raw) return [];
 
@@ -57,6 +75,17 @@ async function readLastLogLines(params: {
   }
 
   return out;
+}
+
+// Shared FileManager instance — initialised once, reused across all status/health polls
+let sharedFileManager: InvoiceFileManager | null = null;
+
+async function getSharedFileManager(): Promise<InvoiceFileManager> {
+  if (!sharedFileManager) {
+    sharedFileManager = new InvoiceFileManager({ outputDir: config.insert.outputDir });
+    await sharedFileManager.initialize();
+  }
+  return sharedFileManager;
 }
 
 /**
@@ -81,8 +110,7 @@ export function setupApiRoutes(app: Hono): void {
       await fs.mkdir(config.insert.outputDir, { recursive: true });
       await fs.access(config.insert.outputDir, fs.constants.W_OK as any);
       writable = true;
-      const fm = new InvoiceFileManager({ outputDir: config.insert.outputDir });
-      await fm.initialize();
+      const fm = await getSharedFileManager();
       totalInvoices = (await fm.listSaved())?.length || 0;
     } catch {
       writable = false;
@@ -142,12 +170,13 @@ export function setupApiRoutes(app: Hono): void {
     const module = c.req.query('module') || undefined;
 
     const entries = await readLastLogLines({ lines, level, module }).catch(() => []);
-    return c.json({ logPath: getTodayLogPath(), entries });
+    const logPath = await getLatestTodayLogPath();
+    return c.json({ logPath, entries });
   });
 
   // GET /api/logs/download - download today's logs
   app.get('/api/logs/download', async (c: Context) => {
-    const logPath = getTodayLogPath();
+    const logPath = await getLatestTodayLogPath();
     const content = await fs.readFile(logPath).catch(() => null);
     if (!content) return c.json({ error: 'Log file not found' }, 404);
 
@@ -160,12 +189,24 @@ export function setupApiRoutes(app: Hono): void {
   app.get('/api/logs/stream', async (c: Context) => {
     const level = (c.req.query('level') || '').toLowerCase() || undefined;
     const module = (c.req.query('module') || '').toLowerCase() || undefined;
-    const logPath = getTodayLogPath();
+    const logPath = await getLatestTodayLogPath();
+
+    // Use closures for interval IDs so cancel() can clear them reliably
+    let tickInterval: ReturnType<typeof setInterval> | null = null;
+    let heartbeatInterval: ReturnType<typeof setInterval> | null = null;
 
     const stream = new ReadableStream({
       async start(controller) {
         let pos = 0;
         const encoder = new TextEncoder();
+
+        const enqueue = (payload: string) => {
+          try {
+            controller.enqueue(encoder.encode(payload));
+          } catch {
+            // stream was closed/cancelled
+          }
+        };
 
         const tick = async () => {
           try {
@@ -184,10 +225,9 @@ export function setupApiRoutes(app: Hono): void {
                   const obj = JSON.parse(line);
                   if (level && String(obj.level).toLowerCase() !== level) continue;
                   if (module && String(obj.module).toLowerCase() !== module) continue;
-                  const payload = `data: ${JSON.stringify(obj)}\n\n`;
-                  controller.enqueue(encoder.encode(payload));
+                  enqueue(`data: ${JSON.stringify(obj)}\n\n`);
                 } catch {
-                  // ignore
+                  // ignore non-JSON lines
                 }
               }
             }
@@ -197,7 +237,17 @@ export function setupApiRoutes(app: Hono): void {
           }
         };
 
-        // prime position to end of file (only new logs)
+        // Bootstrap: send last 100 lines so the feed isn't empty on connect
+        try {
+          const historical = await readLastLogLines({ lines: 100, level, module });
+          for (const obj of historical) {
+            enqueue(`data: ${JSON.stringify(obj)}\n\n`);
+          }
+        } catch {
+          // ignore — if log file missing, just start tailing
+        }
+
+        // Set pos to current end so the interval only picks up NEW entries
         try {
           const stat = await fs.stat(logPath);
           pos = stat.size;
@@ -205,11 +255,16 @@ export function setupApiRoutes(app: Hono): void {
           pos = 0;
         }
 
-        const interval = setInterval(tick, 1000);
-        (controller as any).closeWithCleanup = () => clearInterval(interval);
+        tickInterval = setInterval(tick, 1000);
+
+        // Keepalive: send SSE comment every 25s to prevent browser/proxy timeouts
+        heartbeatInterval = setInterval(() => {
+          enqueue(': keepalive\n\n');
+        }, 25000);
       },
-      cancel(controller) {
-        (controller as any).closeWithCleanup?.();
+      cancel() {
+        if (tickInterval !== null) clearInterval(tickInterval);
+        if (heartbeatInterval !== null) clearInterval(heartbeatInterval);
       },
     });
 
@@ -280,22 +335,31 @@ export function setupApiRoutes(app: Hono): void {
       JSON.parse(raw);
       checks.index = { status: 'pass', detail: 'Index file readable and valid JSON' };
     } catch (e: any) {
-      checks.index = {
-        status: 'fail',
-        detail: `Index file broken or missing: ${e?.code || e?.message || 'unknown'}`,
-        suggestion: 'Usuń/usuwaj .index.json lub napraw JSON; aplikacja odtworzy go przy kolejnych zapisach',
-      };
+      if (e?.code === 'ENOENT') {
+        // No index yet — normal on a fresh install, will be created on first sync
+        checks.index = { status: 'pass', detail: 'Index file not yet created (first run)' };
+      } else {
+        checks.index = {
+          status: 'fail',
+          detail: `Index file broken: ${e?.message || 'unknown'}`,
+          suggestion: 'Usuń .index.json; aplikacja odtworzy go przy kolejnych zapisach',
+        };
+      }
     }
 
-    // XSD schema availability (repo has no XSD currently)
-    checks.xsd = {
-      status: 'fail',
-      detail: 'XSD schema not found in project',
-      suggestion: 'Dodaj FA(2).xsd do repo i podaj ścieżkę do walidatora',
-    };
+    // XSD schema — informational only, does not affect system health status
+    const xsdPath = path.join(process.cwd(), 'FA(2).xsd');
+    const xsdPresent = await fs.access(xsdPath).then(() => true).catch(() => false);
+    checks.xsd = xsdPresent
+      ? { status: 'pass', detail: 'XSD schema found' }
+      : { status: 'fail', detail: 'XSD schema not found (validation skipped)', suggestion: 'Dodaj FA(2).xsd do katalogu projektu' };
+
+    // Overall system health — xsd is informational only, excluded from core status
+    const coreChecks = ['env', 'config', 'ksef', 'storage', 'index'] as const;
+    const coreDegraded = coreChecks.some((k) => checks[k]?.status === 'fail');
 
     return c.json({
-      status: Object.values(checks).some((x) => x.status === 'fail') ? 'degraded' : 'ok',
+      status: coreDegraded ? 'degraded' : 'ok',
       environment: config.ksef.baseUrl.includes('test') ? 'test' : 'production',
       outputDir: config.insert.outputDir,
       nip: config.ksef.nip ? maskNip(config.ksef.nip) : null,
@@ -309,12 +373,11 @@ export function setupApiRoutes(app: Hono): void {
       let totalInvoices = 0;
 
       try {
-        const fileManager = new InvoiceFileManager({ outputDir: config.insert.outputDir });
-        await fileManager.initialize();
+        const fileManager = await getSharedFileManager();
         const savedInvoices = await fileManager.listSaved();
         totalInvoices = savedInvoices?.length || 0;
       } catch (err) {
-        serverLogger.warn('Could not get invoice count', { error: err instanceof Error ? err.message : String(err) });
+        serverLogger.warn({ error: err instanceof Error ? err.message : String(err) }, 'Could not get invoice count');
         // Continue with totalInvoices = 0
       }
 
@@ -329,7 +392,7 @@ export function setupApiRoutes(app: Hono): void {
 
       return c.json(status);
     } catch (error) {
-      serverLogger.error('Status endpoint error', { error: error instanceof Error ? error.message : String(error) });
+      serverLogger.error({ error: error instanceof Error ? error.message : String(error) }, 'Status endpoint error');
       // Return minimal status
       return c.json(
         {
@@ -363,6 +426,12 @@ export function setupApiRoutes(app: Hono): void {
       // Create readable stream for SSE
       const stream = new ReadableStream({
         async start(controller) {
+          // Keep the SSE connection alive during long Retry-After waits (up to ~30 s
+          // per the KSeF docs example, potentially more for hourly-limit violations).
+          const heartbeatInterval = setInterval(() => {
+            try { controller.enqueue(': keepalive\n\n'); } catch { /* stream closed */ }
+          }, 15_000);
+
           try {
             const client = new KsefClient();
             const fileManager = new InvoiceFileManager({ outputDir: config.insert.outputDir });
@@ -371,7 +440,7 @@ export function setupApiRoutes(app: Hono): void {
             const sendProgress = (data: Record<string, unknown>) => {
               const message = `data: ${JSON.stringify(data)}\n\n`;
               controller.enqueue(message);
-              serverLogger.debug('SSE event sent', { kind: 'sync-progress' });
+              serverLogger.debug({ kind: 'sync-progress' }, 'SSE event sent');
             };
 
             // Initialize file manager
@@ -386,49 +455,107 @@ export function setupApiRoutes(app: Hono): void {
             // Query invoices
             sendProgress({ status: 'Wyszukiwanie faktur...' });
 
-            const subjectType =
-              type === 'wszystkie'
-                ? undefined
-                : type === 'sprzedaz'
-                  ? 'subject_type.seller'
-                  : 'subject_type.buyer';
+            const subjectTypes: Array<'Subject1' | 'Subject2'> =
+              type === 'sprzedaz' ? ['Subject1'] :
+              type === 'zakup'    ? ['Subject2'] :
+              /* wszystkie */       ['Subject1', 'Subject2'];
 
-            const queryParams = {
-              pageSize: 100,
-              queryCriteria: {
-                subjectType,
-                dateFrom,
-                dateTo,
-              } as Record<string, unknown>,
+            // Set `to` to end of the selected day (23:59:59 UTC) so invoices
+            // issued on the dateTo day are included in results
+            const toDate = new Date(dateTo);
+            toDate.setUTCHours(23, 59, 59, 999);
+
+            const dateRange = {
+              dateType: 'Invoicing' as const,
+              from: new Date(dateFrom).toISOString(),
+              to: toDate.toISOString(),
             };
 
-            const result = await client.queryInvoices(queryParams);
-            const invoices = result.invoiceHeaderList || [];
+            // KSeF limits: POST /invoices/query/metadata → 16 req/min (sliding window).
+            // 60 000 ms / 16 = 3 750 ms minimum gap; we use 4 000 ms for a small safety margin.
+            const QUERY_DELAY_MS = 4_000;
+            // KSeF limits: GET /invoices/ksef/{ksefNumber} → 16 req/min, 64 req/h.
+            // Per-minute constraint: 60 000 / 16 = 3 750 ms; we use 4 000 ms.
+            // For batches > 64 the 64 req/h cap kicks in; the client's 429 retry
+            // logic (with full Retry-After honour) handles that automatically.
+            const INVOICE_DOWNLOAD_DELAY_MS = 4_000;
+            const allInvoices: Array<{ data: Record<string, unknown>; folderType: 'sprzedaz' | 'zakup' }> = [];
+            for (let qi = 0; qi < subjectTypes.length; qi++) {
+              if (qi > 0) await new Promise((r) => setTimeout(r, QUERY_DELAY_MS));
+              const subjectType = subjectTypes[qi];
+              const folderType = subjectType === 'Subject1' ? 'sprzedaz' : 'zakup';
+              let pageOffset = 0;
+              const pageSize = 100;
+              while (true) {
+                const result = await client.queryInvoices({
+                  pageSize,
+                  pageOffset,
+                  subjectType,
+                  dateRange,
+                });
+                for (const inv of (result.invoices || []) as Array<Record<string, unknown>>) {
+                  allInvoices.push({ data: inv, folderType });
+                }
+                if (!result.hasMore && !result.isTruncated) break;
+                pageOffset += pageSize;
+                await new Promise((r) => setTimeout(r, QUERY_DELAY_MS));
+              }
+            }
+            const invoices = allInvoices;
+
+            if (invoices.length === 0) {
+              sendProgress({ status: 'Brak faktur w podanym zakresie dat.', downloaded: 0, skipped: 0, errors: 0, total: 0, failedInvoices: [], noResults: true });
+              try { await client.terminateSession(); } catch { /* ignore */ }
+              clearInterval(heartbeatInterval);
+              controller.close();
+              return;
+            }
+
+            // KSeF allows only 64 individual invoice downloads per hour (sliding window).
+            // Warn the user early so they understand why a large batch takes a long time.
+            if (invoices.length > 64) {
+              sendProgress({
+                status: `Uwaga: ${invoices.length} faktur do pobrania. Limit API KSeF wynosi 64 pobrania/godz. Proces może potrwać znacznie dłużej niż godzinę — aplikacja automatycznie oczekuje na zwolnienie limitu (Retry-After).`,
+                warning: true,
+                current: 0,
+                total: invoices.length,
+                percentage: 0,
+              });
+            }
 
             // Download and save invoices
             let downloaded = 0;
             let skipped = 0;
             let errors = 0;
+            const failedInvoices: Array<{ ksefRef: string; error: string }> = [];
 
             for (let i = 0; i < invoices.length; i++) {
-              const invoice = invoices[i] as Record<string, unknown>;
+              const { data: invoice, folderType } = invoices[i];
+              const ksefRef = (invoice.ksefNumber as string) || `invoice-${i}`;
+
+              // Throttle to stay within the KSeF per-minute limit (16 req/min).
+              // The delay is skipped for the very first invoice to avoid an
+              // unnecessary wait before any work has been done.
+              if (i > 0) {
+                await new Promise((r) => setTimeout(r, INVOICE_DOWNLOAD_DELAY_MS));
+              }
 
               try {
                 // Get invoice content
-                const ksefRef = invoice.ksefReferenceNumber as string;
                 const invoiceData = await client.getInvoice(ksefRef);
 
                 if (!invoiceData || !invoiceData.content) {
                   throw new Error('Empty invoice content');
                 }
 
-                // Create header object
+                // Use folderType from query context — KSeF invoice metadata does
+                // not include subjectType, so we must derive it from the query
                 const header = {
-                  ksefReferenceNumber: ksefRef,
+                  ksefReferenceNumber: ksefRef as string,
                   invoicingDate: (invoice.invoicingDate as string) || '',
                   issueDate: (invoice.issueDate as string) || '',
-                  subjectType: subjectType as string,
-                  nip: (invoice.sellerNip || invoice.buyerNip) as string,
+                  subjectType: folderType,
+                  nip: ((invoice.seller as Record<string,unknown>)?.nip || (invoice.buyer as Record<string,unknown>)?.nip) as string,
                 };
 
                 // Save invoice
@@ -453,8 +580,10 @@ export function setupApiRoutes(app: Hono): void {
                   percentage,
                 });
               } catch (err) {
-                serverLogger.error('Error processing invoice', { error: err instanceof Error ? err.message : String(err) });
+                const errMsg = err instanceof Error ? err.message : String(err);
+                serverLogger.error({ ksefRef, error: errMsg }, 'Error processing invoice');
                 errors++;
+                failedInvoices.push({ ksefRef, error: errMsg });
               }
             }
 
@@ -466,12 +595,14 @@ export function setupApiRoutes(app: Hono): void {
             }
 
             // Send completion
-            sendProgress({ downloaded, skipped, errors, total: invoices.length });
+            sendProgress({ downloaded, skipped, errors, total: invoices.length, failedInvoices });
+            clearInterval(heartbeatInterval);
             controller.close();
           } catch (error) {
-            serverLogger.error('Sync error', { error: error instanceof Error ? error.message : String(error) });
+            serverLogger.error({ error: error instanceof Error ? error.message : String(error) }, 'Sync error');
             const message = `data: ${JSON.stringify({ error: error instanceof Error ? error.message : 'Unknown error' })}\n\n`;
             controller.enqueue(message);
+            clearInterval(heartbeatInterval);
             controller.close();
           }
         },
@@ -483,7 +614,7 @@ export function setupApiRoutes(app: Hono): void {
 
       return new Response(stream);
     } catch (error) {
-      serverLogger.error('Sync endpoint error', { error: error instanceof Error ? error.message : String(error) });
+      serverLogger.error({ error: error instanceof Error ? error.message : String(error) }, 'Sync endpoint error');
       return c.json(
         { error: 'Sync failed', message: error instanceof Error ? error.message : 'Unknown error' },
         500
@@ -538,7 +669,7 @@ export function setupApiRoutes(app: Hono): void {
         total: invoices.length,
       });
     } catch (error) {
-      serverLogger.error('Invoices endpoint error', { error: error instanceof Error ? error.message : String(error) });
+      serverLogger.error({ error: error instanceof Error ? error.message : String(error) }, 'Invoices endpoint error');
       return c.json({ error: 'Failed to list invoices', invoices: [], total: 0 }, 200); // Return empty on error
     }
   });
@@ -572,7 +703,7 @@ export function setupApiRoutes(app: Hono): void {
 
       return c.text(content);
     } catch (error) {
-      serverLogger.error('Download endpoint error', { error: error instanceof Error ? error.message : String(error) });
+      serverLogger.error({ error: error instanceof Error ? error.message : String(error) }, 'Download endpoint error');
       return c.json({ error: 'Download failed' }, 500);
     }
   });
@@ -649,7 +780,7 @@ export function setupApiRoutes(app: Hono): void {
         errors: errors.slice(0, 10), // First 10 files with errors
       });
     } catch (error) {
-      serverLogger.error('Validate endpoint error', { error: error instanceof Error ? error.message : String(error) });
+      serverLogger.error({ error: error instanceof Error ? error.message : String(error) }, 'Validate endpoint error');
       return c.json({ error: 'Validation failed', total: 0, valid: 0, invalid: 0, errors: [] }, 200);
     }
   });
@@ -668,7 +799,7 @@ export function setupApiRoutes(app: Hono): void {
         baseUrl: config.ksef.baseUrl,
       });
     } catch (error) {
-      serverLogger.error('Config endpoint error', { error: error instanceof Error ? error.message : String(error) });
+      serverLogger.error({ error: error instanceof Error ? error.message : String(error) }, 'Config endpoint error');
       return c.json({ error: 'Failed to get config' }, 500);
     }
   });

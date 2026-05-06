@@ -3,6 +3,7 @@
  * Validated using Zod
  */
 
+import 'dotenv/config';
 import { z } from 'zod';
 import { ConfigError } from './errors.js';
 
@@ -26,7 +27,8 @@ export const loadConfig = (): Config => {
   try {
     const config = {
       ksef: {
-        baseUrl: process.env.KSEF_BASE_URL || 'https://ksef-test.mf.gov.pl/api',
+        // Default to production API 2.x host unless overridden
+        baseUrl: process.env.KSEF_BASE_URL || 'https://api.ksef.mf.gov.pl/v2',
         token: process.env.KSEF_TOKEN,
         nip: process.env.KSEF_NIP,
       },
