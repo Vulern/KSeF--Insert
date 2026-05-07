@@ -190,7 +190,6 @@ export function setupApiRoutes(app: Hono): void {
   app.get('/api/logs/stream', async (c: Context) => {
     const level = (c.req.query('level') || '').toLowerCase() || undefined;
     const module = (c.req.query('module') || '').toLowerCase() || undefined;
-    const logPath = await getLatestTodayLogPath();
 
     // Use closures for interval IDs so cancel() can clear them reliably
     let tickInterval: ReturnType<typeof setInterval> | null = null;
@@ -198,6 +197,10 @@ export function setupApiRoutes(app: Hono): void {
 
     const stream = new ReadableStream({
       async start(controller) {
+        // Active log file + read offset. Both can change at runtime when
+        // pino-roll rotates the log mid-stream (size limit hit) or when
+        // the calendar day rolls over to a new file.
+        let currentLogPath = await getLatestTodayLogPath();
         let pos = 0;
         const encoder = new TextEncoder();
 
@@ -209,16 +212,25 @@ export function setupApiRoutes(app: Hono): void {
           }
         };
 
-        const tick = async () => {
+        // Read new bytes from `filePath` starting at `fromPos`, dispatch
+        // each parsed JSON log line as an SSE event, and return the new
+        // offset. Caller is responsible for tracking which file `fromPos`
+        // belongs to.
+        const drain = async (filePath: string, fromPos: number): Promise<number> => {
+          const fh = await fs.open(filePath, 'r').catch(() => null);
+          if (!fh) return fromPos;
+          let nextPos = fromPos;
           try {
-            const fh = await fs.open(logPath, 'r').catch(() => null);
-            if (!fh) return;
             const stat = await fh.stat();
-            if (stat.size > pos) {
-              const sizeToRead = stat.size - pos;
+            // File shrunk (truncation/replacement): rewind to the start.
+            if (stat.size < fromPos) {
+              nextPos = 0;
+            }
+            if (stat.size > nextPos) {
+              const sizeToRead = stat.size - nextPos;
               const buf = Buffer.alloc(Math.min(sizeToRead, 1024 * 256));
-              const { bytesRead } = await fh.read(buf, 0, buf.length, pos);
-              pos += bytesRead;
+              const { bytesRead } = await fh.read(buf, 0, buf.length, nextPos);
+              nextPos += bytesRead;
               const chunk = buf.subarray(0, bytesRead).toString('utf-8');
               const lines = chunk.split('\n').filter(Boolean);
               for (const line of lines) {
@@ -232,7 +244,29 @@ export function setupApiRoutes(app: Hono): void {
                 }
               }
             }
-            await fh.close();
+          } catch {
+            // ignore streaming errors
+          } finally {
+            await fh.close().catch(() => {});
+          }
+          return nextPos;
+        };
+
+        const tick = async () => {
+          try {
+            // Detect rotation / day-roll: if a newer file now matches
+            // today's prefix (or today's date itself changed), drain any
+            // residual bytes from the previous file before switching.
+            // pino-roll writes complete JSON lines per call, so the old
+            // file's tail is safe to parse; for the new file we start at
+            // offset 0 to capture every line written since rotation.
+            const latestPath = await getLatestTodayLogPath();
+            if (latestPath !== currentLogPath) {
+              pos = await drain(currentLogPath, pos);
+              currentLogPath = latestPath;
+              pos = 0;
+            }
+            pos = await drain(currentLogPath, pos);
           } catch {
             // ignore streaming errors
           }
@@ -250,7 +284,7 @@ export function setupApiRoutes(app: Hono): void {
 
         // Set pos to current end so the interval only picks up NEW entries
         try {
-          const stat = await fs.stat(logPath);
+          const stat = await fs.stat(currentLogPath);
           pos = stat.size;
         } catch {
           pos = 0;
@@ -269,10 +303,19 @@ export function setupApiRoutes(app: Hono): void {
       },
     });
 
-    c.header('Content-Type', 'text/event-stream');
-    c.header('Cache-Control', 'no-cache');
-    c.header('Connection', 'keep-alive');
-    return new Response(stream);
+    // NB: Hono's `c.header()` does NOT propagate Content-Type onto a Response
+    // that is returned directly (it stays in #preparedHeaders, and the `set res`
+    // path explicitly skips content-type when merging). EventSource refuses to
+    // connect without `Content-Type: text/event-stream`, so set headers on the
+    // Response directly.
+    return new Response(stream, {
+      headers: {
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        'Cache-Control': 'no-cache, no-transform',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no',
+      },
+    });
   });
 
   // GET /api/diagnose - diagnostic report
@@ -679,11 +722,16 @@ export function setupApiRoutes(app: Hono): void {
         },
       });
 
-      c.header('Content-Type', 'text/event-stream');
-      c.header('Cache-Control', 'no-cache');
-      c.header('Connection', 'keep-alive');
-
-      return new Response(stream);
+      // See note in /api/logs/stream — Hono's `c.header()` doesn't apply to
+      // a directly-returned Response; set headers on the Response itself.
+      return new Response(stream, {
+        headers: {
+          'Content-Type': 'text/event-stream; charset=utf-8',
+          'Cache-Control': 'no-cache, no-transform',
+          'Connection': 'keep-alive',
+          'X-Accel-Buffering': 'no',
+        },
+      });
     } catch (error) {
       serverLogger.error({ error: error instanceof Error ? error.message : String(error) }, 'Sync endpoint error');
       return c.json(
