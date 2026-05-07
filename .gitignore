@@ -9,6 +9,8 @@ dist/
 *.tsbuildinfo
 
 # Environment
+ksef-docs/
+.cursorignore
 .env
 .env.local
 .env.*.local

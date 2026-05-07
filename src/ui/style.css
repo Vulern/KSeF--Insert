@@ -735,8 +735,8 @@ select.form-input {
    ============================================ */
 
 .result-section {
-  margin-top: var(--space-xl);
-  padding: var(--space-lg);
+  margin-top: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
   background: linear-gradient(135deg, rgba(16, 185, 129, 0.08) 0%, rgba(16, 185, 129, 0.02) 100%);
   border: 1px solid rgba(16, 185, 129, 0.25);
   border-radius: var(--radius-lg);
@@ -745,31 +745,31 @@ select.form-input {
 
 .result-header {
   font-weight: 700;
-  margin-bottom: var(--space-lg);
+  margin-bottom: var(--space-sm);
   color: var(--color-success);
-  font-size: 15px;
+  font-size: 13px;
 }
 
 .result-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  gap: var(--space-lg);
+  gap: var(--space-sm);
   text-align: center;
 }
 
 .result-label {
-  font-size: 12px;
+  font-size: 11px;
   color: var(--color-text-secondary);
-  margin-bottom: 8px;
+  margin-bottom: 4px;
   text-transform: uppercase;
   letter-spacing: 0.05em;
   font-weight: 500;
 }
 
 .result-number {
-  font-size: 24px;
+  font-size: 18px;
   font-weight: 700;
-  padding: var(--space-md);
+  padding: var(--space-xs) var(--space-sm);
   border-radius: var(--radius-md);
   background-color: rgba(0, 0, 0, 0.2);
 }
