@@ -77,10 +77,11 @@ export interface AuthenticationTokenRefreshResponse {
 export type PublicKeyCertificateUsage = 'KsefTokenEncryption' | 'SymmetricKeyEncryption';
 
 export interface PublicKeyCertificate {
-  /**
-   * Base64-encoded DER certificate
-   */
+  /** Base64-encoded DER certificate */
   certificate: string;
+  /** Key selector sent back to KSeF when using this key (e.g. in export requests) */
+  publicKeyId: string;
+  certificateId?: string;
   validFrom: string;
   validTo: string;
   usage: PublicKeyCertificateUsage[];
@@ -205,6 +206,91 @@ export interface RetryConfig {
   baseDelayMs: number;
   maxDelayMs?: number;
 }
+
+// ---------------------------------------------------------------------------
+// Batch export (POST /invoices/exports) types
+// ---------------------------------------------------------------------------
+
+/**
+ * Encryption info sent to KSeF when initiating a batch export.
+ * AES key is generated locally, RSA-encrypted with KSeF's SymmetricKeyEncryption
+ * public certificate, then sent to KSeF so it can encrypt the returned ZIP.
+ */
+export interface ExportEncryptionInfo {
+  /** Base64 of AES-256 key encrypted with KSeF RSA public cert */
+  encryptedSymmetricKey: string;
+  /** Base64 of the 16-byte AES IV */
+  initializationVector: string;
+  /** publicKeyId from the SymmetricKeyEncryption certificate — tells KSeF which key was used */
+  publicKeyId: string;
+}
+
+export interface ExportRequest {
+  encryption: ExportEncryptionInfo;
+  filters: {
+    subjectType: 'Subject1' | 'Subject2' | 'Subject3' | 'SubjectAuthorized';
+    dateRange: {
+      dateType: 'Issue' | 'Invoicing' | 'PermanentStorage';
+      from: string;
+      to?: string;
+    };
+  };
+}
+
+/** Response from POST /invoices/exports */
+export interface ExportInitResponse {
+  referenceNumber: string;
+}
+
+/** A single part of a multi-part export package */
+export interface ExportPackagePart {
+  ordinalNumber: number;
+  partName: string;
+  method: string;
+  /** Pre-signed URL — no Authorization header needed */
+  url: string;
+  partSize?: number;
+  partHash?: string;
+  encryptedPartSize?: number;
+  encryptedPartHash?: string;
+  expirationDate?: string;
+}
+
+/** The package object inside the export status response */
+export interface ExportPackage {
+  invoiceCount?: number;
+  size?: number;
+  parts: ExportPackagePart[];
+  /** If true, export hit the 10 000 invoice / 1 GB limit; do another export from lastPermanentStorageDate */
+  isTruncated?: boolean;
+  lastPermanentStorageDate?: string;
+  permanentStorageHwmDate?: string;
+}
+
+/** Status response from GET /invoices/exports/{referenceNumber} */
+export interface ExportStatusResponse {
+  referenceNumber?: string;
+  completedDate?: string;
+  status: {
+    code: number;
+    description: string;
+    details?: string[];
+  };
+  /** Singular "package" — not an array */
+  package?: ExportPackage;
+  [key: string]: unknown;
+}
+
+/**
+ * Keys generated locally for a single export operation.
+ * Keep these in memory — they are not stored to disk.
+ */
+export interface ExportKeyMaterial {
+  aesKey: Buffer;
+  iv: Buffer;
+}
+
+// ---------------------------------------------------------------------------
 
 /**
  * Session state tracking

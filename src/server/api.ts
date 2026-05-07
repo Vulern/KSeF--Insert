@@ -6,6 +6,7 @@
 import { Hono } from 'hono';
 import { Context } from 'hono';
 import { KsefClient } from '../ksef/client.js';
+import { extractExportPackage } from '../ksef/export-processor.js';
 import { InvoiceFileManager } from '../storage/file-manager.js';
 import { InvoiceXMLValidator } from '../validator/xml-validator.js';
 import { config } from '../config.js';
@@ -82,7 +83,7 @@ let sharedFileManager: InvoiceFileManager | null = null;
 
 async function getSharedFileManager(): Promise<InvoiceFileManager> {
   if (!sharedFileManager) {
-    sharedFileManager = new InvoiceFileManager({ outputDir: config.insert.outputDir });
+    sharedFileManager = new InvoiceFileManager({ outputDir: config.insert.outputDir, companyNip: config.ksef.nip });
     await sharedFileManager.initialize();
   }
   return sharedFileManager;
@@ -189,7 +190,6 @@ export function setupApiRoutes(app: Hono): void {
   app.get('/api/logs/stream', async (c: Context) => {
     const level = (c.req.query('level') || '').toLowerCase() || undefined;
     const module = (c.req.query('module') || '').toLowerCase() || undefined;
-    const logPath = await getLatestTodayLogPath();
 
     // Use closures for interval IDs so cancel() can clear them reliably
     let tickInterval: ReturnType<typeof setInterval> | null = null;
@@ -197,6 +197,10 @@ export function setupApiRoutes(app: Hono): void {
 
     const stream = new ReadableStream({
       async start(controller) {
+        // Active log file + read offset. Both can change at runtime when
+        // pino-roll rotates the log mid-stream (size limit hit) or when
+        // the calendar day rolls over to a new file.
+        let currentLogPath = await getLatestTodayLogPath();
         let pos = 0;
         const encoder = new TextEncoder();
 
@@ -208,16 +212,25 @@ export function setupApiRoutes(app: Hono): void {
           }
         };
 
-        const tick = async () => {
+        // Read new bytes from `filePath` starting at `fromPos`, dispatch
+        // each parsed JSON log line as an SSE event, and return the new
+        // offset. Caller is responsible for tracking which file `fromPos`
+        // belongs to.
+        const drain = async (filePath: string, fromPos: number): Promise<number> => {
+          const fh = await fs.open(filePath, 'r').catch(() => null);
+          if (!fh) return fromPos;
+          let nextPos = fromPos;
           try {
-            const fh = await fs.open(logPath, 'r').catch(() => null);
-            if (!fh) return;
             const stat = await fh.stat();
-            if (stat.size > pos) {
-              const sizeToRead = stat.size - pos;
+            // File shrunk (truncation/replacement): rewind to the start.
+            if (stat.size < fromPos) {
+              nextPos = 0;
+            }
+            if (stat.size > nextPos) {
+              const sizeToRead = stat.size - nextPos;
               const buf = Buffer.alloc(Math.min(sizeToRead, 1024 * 256));
-              const { bytesRead } = await fh.read(buf, 0, buf.length, pos);
-              pos += bytesRead;
+              const { bytesRead } = await fh.read(buf, 0, buf.length, nextPos);
+              nextPos += bytesRead;
               const chunk = buf.subarray(0, bytesRead).toString('utf-8');
               const lines = chunk.split('\n').filter(Boolean);
               for (const line of lines) {
@@ -231,7 +244,29 @@ export function setupApiRoutes(app: Hono): void {
                 }
               }
             }
-            await fh.close();
+          } catch {
+            // ignore streaming errors
+          } finally {
+            await fh.close().catch(() => {});
+          }
+          return nextPos;
+        };
+
+        const tick = async () => {
+          try {
+            // Detect rotation / day-roll: if a newer file now matches
+            // today's prefix (or today's date itself changed), drain any
+            // residual bytes from the previous file before switching.
+            // pino-roll writes complete JSON lines per call, so the old
+            // file's tail is safe to parse; for the new file we start at
+            // offset 0 to capture every line written since rotation.
+            const latestPath = await getLatestTodayLogPath();
+            if (latestPath !== currentLogPath) {
+              pos = await drain(currentLogPath, pos);
+              currentLogPath = latestPath;
+              pos = 0;
+            }
+            pos = await drain(currentLogPath, pos);
           } catch {
             // ignore streaming errors
           }
@@ -249,7 +284,7 @@ export function setupApiRoutes(app: Hono): void {
 
         // Set pos to current end so the interval only picks up NEW entries
         try {
-          const stat = await fs.stat(logPath);
+          const stat = await fs.stat(currentLogPath);
           pos = stat.size;
         } catch {
           pos = 0;
@@ -268,10 +303,19 @@ export function setupApiRoutes(app: Hono): void {
       },
     });
 
-    c.header('Content-Type', 'text/event-stream');
-    c.header('Cache-Control', 'no-cache');
-    c.header('Connection', 'keep-alive');
-    return new Response(stream);
+    // NB: Hono's `c.header()` does NOT propagate Content-Type onto a Response
+    // that is returned directly (it stays in #preparedHeaders, and the `set res`
+    // path explicitly skips content-type when merging). EventSource refuses to
+    // connect without `Content-Type: text/event-stream`, so set headers on the
+    // Response directly.
+    return new Response(stream, {
+      headers: {
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        'Cache-Control': 'no-cache, no-transform',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no',
+      },
+    });
   });
 
   // GET /api/diagnose - diagnostic report
@@ -434,7 +478,7 @@ export function setupApiRoutes(app: Hono): void {
 
           try {
             const client = new KsefClient();
-            const fileManager = new InvoiceFileManager({ outputDir: config.insert.outputDir });
+            const fileManager = new InvoiceFileManager({ outputDir: config.insert.outputDir, companyNip: config.ksef.nip });
 
             // Helper to send SSE message
             const sendProgress = (data: Record<string, unknown>) => {
@@ -511,17 +555,9 @@ export function setupApiRoutes(app: Hono): void {
               return;
             }
 
-            // KSeF allows only 64 individual invoice downloads per hour (sliding window).
-            // Warn the user early so they understand why a large batch takes a long time.
-            if (invoices.length > 64) {
-              sendProgress({
-                status: `Uwaga: ${invoices.length} faktur do pobrania. Limit API KSeF wynosi 64 pobrania/godz. Proces może potrwać znacznie dłużej niż godzinę — aplikacja automatycznie oczekuje na zwolnienie limitu (Retry-After).`,
-                warning: true,
-                current: 0,
-                total: invoices.length,
-                percentage: 0,
-              });
-            }
+            // Above this threshold use the async batch export instead of per-invoice downloads
+            const EXPORT_THRESHOLD = 50;
+            const useExport = invoices.length >= EXPORT_THRESHOLD;
 
             // Download and save invoices
             let downloaded = 0;
@@ -529,61 +565,139 @@ export function setupApiRoutes(app: Hono): void {
             let errors = 0;
             const failedInvoices: Array<{ ksefRef: string; error: string }> = [];
 
-            for (let i = 0; i < invoices.length; i++) {
-              const { data: invoice, folderType } = invoices[i];
-              const ksefRef = (invoice.ksefNumber as string) || `invoice-${i}`;
+            if (useExport) {
+              // ── Batch export flow ────────────────────────────────────────
+              sendProgress({
+                status: `Eksport wsadowy: ${invoices.length} faktur — inicjowanie (bez limitu per-faktura)…`,
+                current: 0,
+                total: invoices.length,
+                percentage: 0,
+              });
 
-              // Throttle to stay within the KSeF per-minute limit (16 req/min).
-              // The delay is skipped for the very first invoice to avoid an
-              // unnecessary wait before any work has been done.
-              if (i > 0) {
-                await new Promise((r) => setTimeout(r, INVOICE_DOWNLOAD_DELAY_MS));
+              // Group by subject type
+              const byType = new Map<'Subject1' | 'Subject2', typeof invoices>();
+              for (const inv of invoices) {
+                const st: 'Subject1' | 'Subject2' = inv.folderType === 'sprzedaz' ? 'Subject1' : 'Subject2';
+                if (!byType.has(st)) byType.set(st, []);
+                byType.get(st)!.push(inv);
               }
 
-              try {
-                // Get invoice content
-                const invoiceData = await client.getInvoice(ksefRef);
+              for (const [subjectType, invoicesOfType] of byType) {
+                const folderType = subjectType === 'Subject1' ? 'sprzedaz' : 'zakup';
 
-                if (!invoiceData || !invoiceData.content) {
-                  throw new Error('Empty invoice content');
+                try {
+                  sendProgress({ status: `Eksport ${folderType} — inicjowanie…` });
+
+                  const { referenceNumber, keyMaterial } = await client.startExport({
+                    subjectType,
+                    dateRange,
+                  });
+
+                  sendProgress({ status: `Eksport ${folderType} — oczekiwanie na paczki (${referenceNumber.slice(0, 8)}…)` });
+
+                  const exportStatus = await client.waitForExport(referenceNumber);
+                  const parts = exportStatus.package?.parts ?? [];
+
+                  if (exportStatus.package?.isTruncated) {
+                    sendProgress({
+                      status: `Uwaga: eksport ${folderType} ucięty (limit 10 000 faktur). Uruchom sync ponownie od: ${exportStatus.package.lastPermanentStorageDate}`,
+                      warning: true,
+                    });
+                  }
+
+                  for (let pi = 0; pi < parts.length; pi++) {
+                    sendProgress({
+                      status: `Eksport ${folderType} — pobieranie części ${pi + 1}/${parts.length}…`,
+                    });
+
+                    const zipBuffer = await client.downloadExportPackage(parts[pi].url, keyMaterial);
+                    const extracted = extractExportPackage(zipBuffer);
+
+                    for (const item of extracted) {
+                      try {
+                        const saveResult = await fileManager.saveInvoice({
+                          xml: item.xml,
+                          header: {
+                            ksefReferenceNumber: item.ksefNumber,
+                            invoicingDate: item.metadata.invoicingDate as string || '',
+                            issueDate: item.metadata.issueDate as string || '',
+                            subjectType: folderType,
+                            nip: ((item.metadata.seller as Record<string, unknown>)?.nip
+                              ?? (item.metadata.buyer as Record<string, unknown>)?.nip) as string,
+                          },
+                        });
+                        if (saveResult.alreadyExisted) { skipped++; } else { downloaded++; }
+                      } catch (err) {
+                        errors++;
+                        failedInvoices.push({
+                          ksefRef: item.ksefNumber,
+                          error: err instanceof Error ? err.message : String(err),
+                        });
+                      }
+                    }
+
+                    const percentage = Math.round(((downloaded + skipped + errors) / invoices.length) * 100);
+                    sendProgress({ current: downloaded + skipped + errors, total: invoices.length, percentage });
+                  }
+                } catch (err) {
+                  const errMsg = err instanceof Error ? err.message : String(err);
+                  serverLogger.error({ subjectType, error: errMsg }, 'Export batch failed');
+                  errors += invoicesOfType.length;
+                  for (const inv of invoicesOfType) {
+                    failedInvoices.push({ ksefRef: (inv.data.ksefNumber as string) ?? subjectType, error: errMsg });
+                  }
                 }
-
-                // Use folderType from query context — KSeF invoice metadata does
-                // not include subjectType, so we must derive it from the query
-                const header = {
-                  ksefReferenceNumber: ksefRef as string,
-                  invoicingDate: (invoice.invoicingDate as string) || '',
-                  issueDate: (invoice.issueDate as string) || '',
-                  subjectType: folderType,
-                  nip: ((invoice.seller as Record<string,unknown>)?.nip || (invoice.buyer as Record<string,unknown>)?.nip) as string,
-                };
-
-                // Save invoice
-                const saveResult = await fileManager.saveInvoice({
-                  xml: invoiceData.content,
-                  header,
-                });
-
-                if (saveResult.alreadyExisted) {
-                  skipped++;
-                } else {
-                  downloaded++;
-                }
-
-                // Send progress
-                const progress = i + 1;
-                const percentage = Math.round((progress / invoices.length) * 100);
+              }
+            } else {
+              // ── Per-invoice flow ─────────────────────────────────────────
+              if (invoices.length > 0) {
                 sendProgress({
-                  current: progress,
+                  status: `Pobieranie ${invoices.length} faktur (tryb per-faktura)…`,
+                  current: 0,
                   total: invoices.length,
-                  status: `Pobieram fakturę ${progress}/${invoices.length}...`,
-                  percentage,
+                  percentage: 0,
                 });
-              } catch (err) {
-                const errMsg = err instanceof Error ? err.message : String(err);
-                serverLogger.error({ ksefRef, error: errMsg }, 'Error processing invoice');
-                errors++;
-                failedInvoices.push({ ksefRef, error: errMsg });
+              }
+
+              for (let i = 0; i < invoices.length; i++) {
+                const { data: invoice, folderType } = invoices[i];
+                const ksefRef = (invoice.ksefNumber as string) || `invoice-${i}`;
+
+                if (i > 0) {
+                  await new Promise((r) => setTimeout(r, INVOICE_DOWNLOAD_DELAY_MS));
+                }
+
+                try {
+                  const invoiceData = await client.getInvoice(ksefRef);
+                  if (!invoiceData || !invoiceData.content) throw new Error('Empty invoice content');
+
+                  const saveResult = await fileManager.saveInvoice({
+                    xml: invoiceData.content,
+                    header: {
+                      ksefReferenceNumber: ksefRef,
+                      invoicingDate: (invoice.invoicingDate as string) || '',
+                      issueDate: (invoice.issueDate as string) || '',
+                      subjectType: folderType,
+                      nip: ((invoice.seller as Record<string, unknown>)?.nip
+                        || (invoice.buyer as Record<string, unknown>)?.nip) as string,
+                    },
+                  });
+
+                  if (saveResult.alreadyExisted) { skipped++; } else { downloaded++; }
+
+                  const percentage = Math.round(((i + 1) / invoices.length) * 100);
+                  sendProgress({
+                    current: i + 1,
+                    total: invoices.length,
+                    status: `Pobieram fakturę ${i + 1}/${invoices.length}...`,
+                    percentage,
+                  });
+                } catch (err) {
+                  const errMsg = err instanceof Error ? err.message : String(err);
+                  serverLogger.error({ ksefRef, error: errMsg }, 'Error processing invoice');
+                  errors++;
+                  failedInvoices.push({ ksefRef, error: errMsg });
+                }
               }
             }
 
@@ -608,11 +722,16 @@ export function setupApiRoutes(app: Hono): void {
         },
       });
 
-      c.header('Content-Type', 'text/event-stream');
-      c.header('Cache-Control', 'no-cache');
-      c.header('Connection', 'keep-alive');
-
-      return new Response(stream);
+      // See note in /api/logs/stream — Hono's `c.header()` doesn't apply to
+      // a directly-returned Response; set headers on the Response itself.
+      return new Response(stream, {
+        headers: {
+          'Content-Type': 'text/event-stream; charset=utf-8',
+          'Cache-Control': 'no-cache, no-transform',
+          'Connection': 'keep-alive',
+          'X-Accel-Buffering': 'no',
+        },
+      });
     } catch (error) {
       serverLogger.error({ error: error instanceof Error ? error.message : String(error) }, 'Sync endpoint error');
       return c.json(
@@ -628,7 +747,7 @@ export function setupApiRoutes(app: Hono): void {
       const month = c.req.query('month'); // "2024-01"
       const invoiceType = c.req.query('type') || 'zakup'; // "zakup" or "sprzedaz"
 
-      const fileManager = new InvoiceFileManager({ outputDir: config.insert.outputDir });
+      const fileManager = new InvoiceFileManager({ outputDir: config.insert.outputDir, companyNip: config.ksef.nip });
       await fileManager.initialize();
 
       // Parse month to date range
@@ -683,7 +802,7 @@ export function setupApiRoutes(app: Hono): void {
         return c.json({ error: 'ksefRef parameter required' }, 400);
       }
 
-      const fileManager = new InvoiceFileManager({ outputDir: config.insert.outputDir });
+      const fileManager = new InvoiceFileManager({ outputDir: config.insert.outputDir, companyNip: config.ksef.nip });
       await fileManager.initialize();
 
       const savedInvoices = await fileManager.listSaved();
@@ -714,7 +833,7 @@ export function setupApiRoutes(app: Hono): void {
       const body = await c.req.json();
       const { month } = body as { month?: string };
 
-      const fileManager = new InvoiceFileManager({ outputDir: config.insert.outputDir });
+      const fileManager = new InvoiceFileManager({ outputDir: config.insert.outputDir, companyNip: config.ksef.nip });
       const validator = new InvoiceXMLValidator();
 
       await fileManager.initialize();

@@ -28,6 +28,7 @@ import type {
  */
 export class InvoiceFileManager {
   private config: FileManagerConfig;
+  private baseDir: string;
   private indexTracker: IndexTracker;
   private indexLoaded = false;
 
@@ -36,15 +37,23 @@ export class InvoiceFileManager {
       throw new KsefValidationError('outputDir is required in FileManagerConfig');
     }
 
+    const companyNip = config.companyNip ? config.companyNip.replace(/\D/g, '') : '';
+
     this.config = {
       outputDir: config.outputDir,
+      companyNip,
     };
 
-    // Initialize index tracker
-    const indexPath = path.join(this.config.outputDir, '.index.json');
+    // When a company NIP is provided, scope all files under outputDir/<NIP>/
+    this.baseDir = companyNip
+      ? path.join(config.outputDir, companyNip)
+      : config.outputDir;
+
+    // Initialize index tracker scoped to baseDir
+    const indexPath = path.join(this.baseDir, '.index.json');
     this.indexTracker = new IndexTracker(indexPath);
 
-    storageLogger.debug('💾 FileManager initialized', { outputDir: this.config.outputDir });
+    storageLogger.debug('💾 FileManager initialized', { baseDir: this.baseDir });
   }
 
   /**
@@ -53,8 +62,8 @@ export class InvoiceFileManager {
   async initialize(): Promise<void> {
     try {
       // Create output directory if it doesn't exist
-      await fs.mkdir(this.config.outputDir, { recursive: true });
-      storageLogger.debug('📁 Utworzono/zweryfikowano katalog output', { outputDir: this.config.outputDir });
+      await fs.mkdir(this.baseDir, { recursive: true });
+      storageLogger.debug('📁 Utworzono/zweryfikowano katalog output', { baseDir: this.baseDir });
 
       // Load existing index
       await this.indexTracker.load();
@@ -101,7 +110,7 @@ export class InvoiceFileManager {
 
       const folderPath = generateFolderPath(header);
       const fileName = generateFileName(header);
-      const filePath = path.join(this.config.outputDir, folderPath, fileName);
+      const filePath = path.join(this.baseDir, folderPath, fileName);
 
       return {
         filePath,
@@ -113,7 +122,7 @@ export class InvoiceFileManager {
     // Generate file path
     const folderPath = generateFolderPath(header);
     const fileName = generateFileName(header);
-    const fullFolderPath = path.join(this.config.outputDir, folderPath);
+    const fullFolderPath = path.join(this.baseDir, folderPath);
     const filePath = path.join(fullFolderPath, fileName);
 
     try {
@@ -152,7 +161,7 @@ export class InvoiceFileManager {
 
       const indexEntry: IndexEntry = {
         downloadedAt: new Date().toISOString(),
-        filePath: path.relative(this.config.outputDir, filePath),
+        filePath: path.relative(this.baseDir, filePath),
         invoiceDate,
         subjectType,
         nip,
@@ -287,7 +296,7 @@ export class InvoiceFileManager {
     }
 
     try {
-      const filePath = path.join(this.config.outputDir, entry.filePath);
+      const filePath = path.join(this.baseDir, entry.filePath);
 
       // Delete file
       try {
