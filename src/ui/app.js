@@ -47,10 +47,34 @@ const diagDownloadLogsBtn = document.getElementById('diagDownloadLogsBtn');
 let logsEventSource = null;
 let logStreamErrors = 0;
 
+// Theme
+function initTheme() {
+  const saved = localStorage.getItem('ksef-theme') || 'dark';
+  document.documentElement.setAttribute('data-theme', saved);
+  updateThemeButton(saved);
+}
+
+function toggleTheme() {
+  const current = document.documentElement.getAttribute('data-theme') || 'dark';
+  const next = current === 'dark' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', next);
+  localStorage.setItem('ksef-theme', next);
+  updateThemeButton(next);
+}
+
+function updateThemeButton(theme) {
+  const btn = document.getElementById('themeToggle');
+  if (!btn) return;
+  const icon = btn.querySelector('.theme-toggle-icon');
+  if (icon) icon.textContent = theme === 'dark' ? '☀' : '☾';
+  btn.title = theme === 'dark' ? 'Przełącz na tryb jasny' : 'Przełącz na tryb ciemny';
+}
+
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
+  initTheme();
+  document.getElementById('themeToggle')?.addEventListener('click', toggleTheme);
   setDefaultDates();
-  loadStatus();
   loadDiagnose();
   startLogStream();
   // "Pobrane faktury" section removed from UI; avoid invoice-related API calls.
@@ -77,12 +101,19 @@ document.addEventListener('DOMContentLoaded', () => {
 /**
  * Set default dates (today for dateTo, 1 month ago for dateFrom)
  */
+function toLocalISODate(date) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
 function setDefaultDates() {
   const today = new Date();
-  const oneMonthAgo = new Date(today.getFullYear(), today.getMonth() - 1, today.getDate());
+  const firstOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
 
-  if (dateToInput) dateToInput.valueAsDate = today;
-  if (dateFromInput && !dateFromInput.value) dateFromInput.valueAsDate = oneMonthAgo;
+  if (dateToInput) dateToInput.value = toLocalISODate(today);
+  if (dateFromInput) dateFromInput.value = toLocalISODate(firstOfMonth);
 }
 
 /**
@@ -107,13 +138,19 @@ async function loadStatus() {
     }
 
     // Update status section
-    if (statEnv) statEnv.textContent = status.environment || '-';
+    if (statEnv) {
+      const env = status.environment || '-';
+      statEnv.textContent = env.charAt(0).toUpperCase() + env.slice(1);
+    }
     if (nipStatus) nipStatus.textContent = status.nip || '-';
     if (statLastSync) statLastSync.textContent = status.lastSync ? formatDateTime(status.lastSync) : 'Nigdy';
     if (statTotal) statTotal.textContent = (status.totalInvoices || 0).toString();
     if (statFolder) statFolder.textContent = status.outputDir || '-';
     if (folderStatus) folderStatus.textContent = status.outputDir || '-';
-    if (footerEnv) footerEnv.textContent = status.environment || '-';
+    if (footerEnv) {
+      const envF = status.environment || '-';
+      footerEnv.textContent = envF.charAt(0).toUpperCase() + envF.slice(1);
+    }
     if (connectionStatus) connectionStatus.textContent = status.connected ? 'Połączono' : 'Brak połączenia';
   } catch (error) {
     console.error('Error loading status:', error);
