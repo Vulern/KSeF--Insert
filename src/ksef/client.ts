@@ -19,6 +19,11 @@ import {
   xmlToObject,
   extractFromXml,
 } from './xml-parser.js';
+import {
+  generateExportKeyMaterial,
+  buildExportEncryptionInfo,
+  decryptExportZip,
+} from './export-crypto.js';
 import type {
   AuthenticationChallengeResponse,
   AuthenticationInitResponse,
@@ -37,6 +42,10 @@ import type {
   KsefClientConfig,
   RetryConfig,
   SessionState,
+  ExportRequest,
+  ExportInitResponse,
+  ExportStatusResponse,
+  ExportKeyMaterial,
 } from './types.js';
 
 /**
@@ -107,10 +116,13 @@ export class KsefClient {
     return d;
   }
 
-  private pickKsefTokenEncryptionCert(certs: PublicKeyCertificate[]): PublicKeyCertificate {
+  private pickCertByUsage(
+    certs: PublicKeyCertificate[],
+    usage: 'KsefTokenEncryption' | 'SymmetricKeyEncryption'
+  ): PublicKeyCertificate {
     const now = Date.now();
     const candidates = certs
-      .filter((c) => Array.isArray(c.usage) && c.usage.includes('KsefTokenEncryption'))
+      .filter((c) => Array.isArray(c.usage) && c.usage.includes(usage))
       .filter((c) => {
         const from = new Date(c.validFrom).getTime();
         const to = new Date(c.validTo).getTime();
@@ -119,9 +131,13 @@ export class KsefClient {
       .sort((a, b) => new Date(b.validTo).getTime() - new Date(a.validTo).getTime());
 
     if (!candidates[0]) {
-      throw new KsefAuthError('No valid KSeF token encryption certificate available', 'NO_PUBLIC_KEY');
+      throw new KsefAuthError(`No valid certificate with usage=${usage}`, 'NO_PUBLIC_KEY');
     }
     return candidates[0];
+  }
+
+  private pickKsefTokenEncryptionCert(certs: PublicKeyCertificate[]): PublicKeyCertificate {
+    return this.pickCertByUsage(certs, 'KsefTokenEncryption');
   }
 
   private getPublicKeyPemFromCertificateBase64(certificateBase64Der: string): string {
@@ -143,17 +159,30 @@ export class KsefClient {
     return encrypted.toString('base64');
   }
 
-  private async fetchKsefTokenEncryptionPublicKeyPem(): Promise<string> {
-    if (this.clientConfig.ksefTokenEncryptionPublicKeyPem) {
-      return this.clientConfig.ksefTokenEncryptionPublicKeyPem;
-    }
-
+  private async fetchPublicCerts(): Promise<PublicKeyCertificate[]> {
     const resp = await this.httpClient.get<PublicKeyCertificate[]>('/security/public-key-certificates');
     if (!Array.isArray(resp.data)) {
       throw new KsefApiError('Invalid public key certificates response', 'INVALID_RESPONSE');
     }
-    const cert = this.pickKsefTokenEncryptionCert(resp.data);
+    return resp.data;
+  }
+
+  private async fetchKsefTokenEncryptionPublicKeyPem(): Promise<string> {
+    if (this.clientConfig.ksefTokenEncryptionPublicKeyPem) {
+      return this.clientConfig.ksefTokenEncryptionPublicKeyPem;
+    }
+    const certs = await this.fetchPublicCerts();
+    const cert = this.pickKsefTokenEncryptionCert(certs);
     return this.getPublicKeyPemFromCertificateBase64(cert.certificate);
+  }
+
+  private async fetchSymmetricKeyEncryptionCert(): Promise<{ pem: string; publicKeyId: string }> {
+    const certs = await this.fetchPublicCerts();
+    const cert = this.pickCertByUsage(certs, 'SymmetricKeyEncryption');
+    return {
+      pem: this.getPublicKeyPemFromCertificateBase64(cert.certificate),
+      publicKeyId: cert.publicKeyId,
+    };
   }
 
   private async getChallenge(): Promise<AuthenticationChallengeResponse> {
@@ -789,6 +818,135 @@ export class KsefClient {
     ksefLogger.info('📋 Aktywne sesje', { count: sessions.length });
     return sessions;
   }
+
+  // ---------------------------------------------------------------------------
+  // Batch export — POST /invoices/exports
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Initiate an asynchronous batch export for the given filters.
+   *
+   * Generates a fresh AES-256 key + IV locally, RSA-encrypts the key with
+   * KSeF's SymmetricKeyEncryption certificate, and sends it with the export
+   * request.  KSeF will encrypt the resulting ZIP with our AES key so we can
+   * decrypt it after download.
+   *
+   * Returns the server-side referenceNumber and the local key material needed
+   * to decrypt the downloaded packages.
+   */
+  async startExport(params: {
+    subjectType: 'Subject1' | 'Subject2' | 'Subject3' | 'SubjectAuthorized';
+    dateRange: { dateType: 'Issue' | 'Invoicing' | 'PermanentStorage'; from: string; to?: string };
+  }): Promise<{ referenceNumber: string; keyMaterial: ExportKeyMaterial }> {
+    await this.ensureValidSession();
+
+    ksefLogger.info('📦 Inicjuję eksport faktur', { subjectType: params.subjectType });
+
+    const { pem: symmetricKeyPem, publicKeyId } = await this.fetchSymmetricKeyEncryptionCert();
+    const keyMaterial = generateExportKeyMaterial();
+    const encryptionInfo = buildExportEncryptionInfo(keyMaterial, symmetricKeyPem, publicKeyId);
+
+    const body: ExportRequest = {
+      encryption: encryptionInfo,
+      filters: {
+        subjectType: params.subjectType,
+        dateRange: params.dateRange,
+      },
+    };
+
+    const response = await this.executeWithRetry(async () => {
+      const res = await this.httpClient.post<ExportInitResponse>('/invoices/exports', body, {
+        headers: this.getAuthHeaders(),
+      });
+      if (!res.data?.referenceNumber) {
+        throw new KsefApiError('Invalid export init response', 'EMPTY_RESPONSE');
+      }
+      return res.data;
+    }, 'startExport');
+
+    ksefLogger.info('📦 Eksport zainicjowany', { referenceNumber: response.referenceNumber });
+    return { referenceNumber: response.referenceNumber, keyMaterial };
+  }
+
+  /**
+   * Poll GET /invoices/exports/{referenceNumber} until the export is ready or
+   * fails.  Polls every `pollIntervalMs` (default 5 s) for up to `timeoutMs`
+   * (default 30 min).
+   */
+  async waitForExport(
+    referenceNumber: string,
+    opts: { pollIntervalMs?: number; timeoutMs?: number } = {}
+  ): Promise<ExportStatusResponse> {
+    await this.ensureValidSession();
+
+    const pollInterval = opts.pollIntervalMs ?? 5_000;
+    const deadline = Date.now() + (opts.timeoutMs ?? 30 * 60 * 1_000);
+
+    ksefLogger.info('⏳ Czekam na gotowość eksportu', { referenceNumber });
+
+    while (Date.now() < deadline) {
+      const status = await this.executeWithRetry(async () => {
+        const res = await this.httpClient.get<ExportStatusResponse>(
+          `/invoices/exports/${referenceNumber}`,
+          { headers: this.getAuthHeaders() }
+        );
+        if (!res.data?.status) {
+          throw new KsefApiError('Invalid export status response', 'EMPTY_RESPONSE');
+        }
+        return res.data;
+      }, 'waitForExport');
+
+      const code = status.status.code;
+
+      // 100 = in progress / queued
+      if (code === 100) {
+        ksefLogger.debug('⏳ Eksport w toku, czekam…', { referenceNumber, code });
+        await this.sleep(pollInterval);
+        continue;
+      }
+
+      // 200 = ready
+      if (code === 200) {
+        ksefLogger.info('✅ Eksport gotowy', {
+          referenceNumber,
+          invoiceCount: status.package?.invoiceCount,
+          parts: status.package?.parts?.length ?? 0,
+          isTruncated: status.package?.isTruncated,
+        });
+        return status;
+      }
+
+      // Any other code is an error
+      const details = status.status.details?.join('; ') ?? '';
+      throw new KsefApiError(
+        `Export failed (${code}): ${status.status.description}${details ? ` — ${details}` : ''}`,
+        'EXPORT_FAILED',
+        code
+      );
+    }
+
+    throw new KsefApiError(`Export timed out after ${opts.timeoutMs ?? 30 * 60 * 1_000}ms`, 'EXPORT_TIMEOUT');
+  }
+
+  /**
+   * Download a single export part (pre-signed Azure Blob URL) and decrypt it.
+   * These URLs do NOT require an Authorization header — they are self-contained.
+   * Returns the decrypted ZIP buffer ready for extraction.
+   */
+  async downloadExportPackage(partUrl: string, keyMaterial: ExportKeyMaterial): Promise<Buffer> {
+    ksefLogger.info('⬇️ Pobieram część paczki eksportu', { url: partUrl.split('?')[0] });
+
+    const response = await axios.get<ArrayBuffer>(partUrl, {
+      responseType: 'arraybuffer',
+      timeout: 5 * 60 * 1_000,
+    });
+
+    const encrypted = Buffer.from(response.data);
+    ksefLogger.info('🔓 Deszyfrowanie części paczki', { encryptedBytes: encrypted.length });
+    return decryptExportZip(encrypted, keyMaterial);
+  }
+
+  // ---------------------------------------------------------------------------
 
   /**
    * Get current session info

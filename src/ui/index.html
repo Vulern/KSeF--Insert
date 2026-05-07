@@ -47,14 +47,6 @@
         </div>
 
         <div class="stat-card">
-          <div class="stat-icon">📊</div>
-          <div class="stat-content">
-            <div class="stat-label">Pobrane faktury</div>
-            <div id="statTotal" class="stat-value">0</div>
-          </div>
-        </div>
-
-        <div class="stat-card">
           <div class="stat-icon">📁</div>
           <div class="stat-content">
             <div class="stat-label">Katalog</div>
@@ -137,45 +129,6 @@
             </div>
           </div>
           <div id="failedList" class="failed-list hidden"></div>
-        </div>
-      </section>
-
-      <!-- Invoices Section -->
-      <section class="section-card">
-        <div class="section-header">
-          <h2 class="section-title">📋 Pobrane faktury</h2>
-          <p class="section-description">Lista zsynchronizowanych dokumentów</p>
-        </div>
-
-        <div class="invoices-controls">
-          <div class="form-group">
-            <label for="monthSelect" class="form-label">Filtruj po miesiącu</label>
-            <select id="monthSelect" class="form-input">
-              <option value="">Wszystkie miesiące</option>
-            </select>
-          </div>
-        </div>
-
-        <div class="table-wrapper">
-          <table class="data-table">
-            <thead>
-              <tr>
-                <th>Data</th>
-                <th>NIP</th>
-                <th>Nr KSeF</th>
-                <th class="col-actions">Akcja</th>
-              </tr>
-            </thead>
-            <tbody id="invoicesBody">
-              <tr class="empty-row">
-                <td colspan="4" class="empty-state">Brak faktur do wyświetlenia</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-
-        <div class="table-footer">
-          <div class="records-count">Łącznie: <strong id="invoiceCount">0</strong> faktur(a)</div>
         </div>
       </section>
 

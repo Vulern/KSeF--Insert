@@ -53,8 +53,11 @@ document.addEventListener('DOMContentLoaded', () => {
   loadStatus();
   loadDiagnose();
   startLogStream();
-  generateMonthOptions();
-  loadInvoices();
+  // "Pobrane faktury" section removed from UI; avoid invoice-related API calls.
+  if (invoicesBody) {
+    generateMonthOptions();
+    loadInvoices();
+  }
 
   if (syncButton) syncButton.addEventListener('click', handleSync);
   if (monthSelect) monthSelect.addEventListener('change', loadInvoices);
@@ -321,7 +324,7 @@ async function handleSync() {
     if (buffer) processSSELine(buffer);
 
     await loadStatus();
-    await loadInvoices();
+    // invoices UI removed
     showToast('Synchronizacja zakończona', 'success');
   } catch (error) {
     console.error('Sync error:', error);

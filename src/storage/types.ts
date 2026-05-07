@@ -51,4 +51,5 @@ export interface InvoiceIndex {
 
 export interface FileManagerConfig {
   outputDir: string;
+  companyNip?: string;
 }

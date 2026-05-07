@@ -9,6 +9,7 @@ import { config } from '../../config.js';
 import { InvoiceFileManager } from '../../storage/index.js';
 import { createAuth } from '../../ksef/auth.js';
 import { ksefClient } from '../../ksef/client.js';
+import { extractExportPackage } from '../../ksef/export-processor.js';
 import { KsefValidationError, KsefAuthError, KsefConnectionError } from '../../errors.js';
 import {
   colors,
@@ -21,6 +22,13 @@ import {
   printWarning,
 } from '../formatter.js';
 import { Progress, ProgressTracker } from '../progress.js';
+
+/**
+ * Above this count the export (batch) flow is used instead of one-by-one downloads.
+ * The per-invoice endpoint has a 64/h limit; the export endpoint is essentially
+ * unlimited for the content and handles hundreds of invoices in a single request.
+ */
+const EXPORT_THRESHOLD = 50;
 
 interface SyncOptions {
   from: string;
@@ -76,7 +84,7 @@ async function syncAction(options: SyncOptions): Promise<void> {
 
   try {
     // Initialize file manager
-    const fileManager = new InvoiceFileManager({ outputDir: config.insert.outputDir });
+    const fileManager = new InvoiceFileManager({ outputDir: config.insert.outputDir, companyNip: config.ksef.nip });
     await fileManager.initialize();
 
     // Connect to KSeF
@@ -182,60 +190,157 @@ async function syncAction(options: SyncOptions): Promise<void> {
       return;
     }
 
-    // Download invoices
+    // Download invoices — use batch export above the threshold, one-by-one below
     console.log();
-    const tracker = new ProgressTracker();
-    tracker.setTotal(invoicesToDownload.length);
-    tracker.setPrefix(`${emojis.download} Downloading:`);
 
-    const downloadSpinner = new Progress();
-    downloadSpinner.start(tracker.toString());
-
-    const INTER_REQUEST_DELAY_MS = 300;
-
-    for (const invoice of invoicesToDownload) {
-      try {
-        const { data: inv, folderType } = invoice;
-
-        // Get invoice XML as string
-        const invoiceData = await ksefClient.getInvoice(inv.ksefNumber as string);
-
-        if (!invoiceData || !invoiceData.content) {
-          throw new Error('Empty XML response');
-        }
-
-        // Save to disk — use folderType derived from the query subject type so
-        // sales invoices always land in sprzedaz/ and purchases in zakup/
-        const saveResult = await fileManager.saveInvoice({
-          xml: invoiceData.content,
-          header: {
-            ksefReferenceNumber: inv.ksefNumber as string,
-            invoicingDate: inv.invoicingDate as string | undefined,
-            issueDate: inv.issueDate as string | undefined,
-            subjectType: folderType,
-            sellerNip: (inv.seller as Record<string, unknown>)?.nip as string | undefined,
-            buyerNip: (inv.buyer as Record<string, unknown>)?.nip as string | undefined,
-          },
-        });
-
-        if (!saveResult.alreadyExisted) {
-          totalDownloaded++;
-        } else {
-          totalSkipped++;
-        }
-      } catch (error) {
-        totalErrors++;
-        const errorMsg =
-          error instanceof Error ? error.message : 'Unknown error';
-        errors.push({ invoiceId: invoice.data.ksefNumber as string, error: errorMsg });
-      }
-
-      tracker.increment();
-      downloadSpinner.update(tracker.toString());
-      await new Promise((resolve) => setTimeout(resolve, INTER_REQUEST_DELAY_MS));
+    const useExport = invoicesToDownload.length >= EXPORT_THRESHOLD;
+    if (useExport) {
+      printInfo(
+        `${emojis.download} ${invoicesToDownload.length} faktur → używam eksportu wsadowego (bez limitu per-faktura)`
+      );
     }
 
-    downloadSpinner.succeed(`Download complete: ${totalDownloaded} invoices saved`);
+    const downloadSpinner = new Progress();
+
+    if (useExport) {
+      // ── Batch export flow ────────────────────────────────────────────────
+      // Group by subjectType so we issue one export per type
+      const byType = new Map<'Subject1' | 'Subject2', typeof invoicesToDownload>();
+      for (const inv of invoicesToDownload) {
+        const st = (inv.folderType === 'sprzedaz' ? 'Subject1' : 'Subject2') as 'Subject1' | 'Subject2';
+        if (!byType.has(st)) byType.set(st, []);
+        byType.get(st)!.push(inv);
+      }
+
+      const exportDateRange = {
+        dateType: 'Invoicing' as const,
+        from: startDate.toISOString(),
+        to: endDate.toISOString(),
+      };
+
+      for (const [subjectType, invoicesOfType] of byType) {
+        const folderType = subjectType === 'Subject1' ? 'sprzedaz' : 'zakup';
+        downloadSpinner.start(`📦 Eksport ${folderType} — inicjowanie…`);
+
+        try {
+          const { referenceNumber, keyMaterial } = await ksefClient.startExport({
+            subjectType,
+            dateRange: exportDateRange,
+          });
+
+          downloadSpinner.update(
+            `⏳ Eksport ${folderType} — czekam na gotowość (${referenceNumber.slice(0, 8)}…)`
+          );
+
+          const exportStatus = await ksefClient.waitForExport(referenceNumber);
+          const parts = exportStatus.package?.parts ?? [];
+
+          if (parts.length === 0) {
+            downloadSpinner.warn(`Eksport ${folderType} — brak części do pobrania`);
+            continue;
+          }
+
+          if (exportStatus.package?.isTruncated) {
+            printWarning(
+              `Eksport ${folderType} został ucięty (limit 10 000 faktur/1 GB). Uruchom sync ponownie od daty: ${exportStatus.package.lastPermanentStorageDate}`
+            );
+          }
+
+          for (let pi = 0; pi < parts.length; pi++) {
+            const part = parts[pi];
+            downloadSpinner.update(
+              `⬇️ Eksport ${folderType} — część ${pi + 1}/${parts.length}`
+            );
+
+            const zipBuffer = await ksefClient.downloadExportPackage(part.url, keyMaterial);
+            const extracted = extractExportPackage(zipBuffer);
+
+            for (const item of extracted) {
+              try {
+                const saveResult = await fileManager.saveInvoice({
+                  xml: item.xml,
+                  header: {
+                    ksefReferenceNumber: item.ksefNumber,
+                    invoicingDate: item.metadata.invoicingDate as string | undefined,
+                    issueDate: item.metadata.issueDate as string | undefined,
+                    subjectType: folderType,
+                    sellerNip: (item.metadata.seller as Record<string, unknown>)?.nip as string | undefined,
+                    buyerNip: (item.metadata.buyer as Record<string, unknown>)?.nip as string | undefined,
+                  },
+                });
+                if (!saveResult.alreadyExisted) {
+                  totalDownloaded++;
+                } else {
+                  totalSkipped++;
+                }
+              } catch (err) {
+                totalErrors++;
+                errors.push({
+                  invoiceId: item.ksefNumber,
+                  error: err instanceof Error ? err.message : String(err),
+                });
+              }
+            }
+          }
+
+          downloadSpinner.succeed(`Eksport ${folderType} zakończony`);
+        } catch (error) {
+          const msg = error instanceof Error ? error.message : String(error);
+          downloadSpinner.fail(`Eksport ${folderType} nieudany: ${msg}`);
+          totalErrors += invoicesOfType.length;
+          for (const inv of invoicesOfType) {
+            errors.push({ invoiceId: inv.data.ksefNumber as string, error: msg });
+          }
+        }
+      }
+    } else {
+      // ── Per-invoice flow (below threshold) ──────────────────────────────
+      const tracker = new ProgressTracker();
+      tracker.setTotal(invoicesToDownload.length);
+      tracker.setPrefix(`${emojis.download} Downloading:`);
+      downloadSpinner.start(tracker.toString());
+
+      const INTER_REQUEST_DELAY_MS = 300;
+
+      for (const invoice of invoicesToDownload) {
+        try {
+          const { data: inv, folderType } = invoice;
+
+          const invoiceData = await ksefClient.getInvoice(inv.ksefNumber as string);
+          if (!invoiceData || !invoiceData.content) throw new Error('Empty XML response');
+
+          const saveResult = await fileManager.saveInvoice({
+            xml: invoiceData.content,
+            header: {
+              ksefReferenceNumber: inv.ksefNumber as string,
+              invoicingDate: inv.invoicingDate as string | undefined,
+              issueDate: inv.issueDate as string | undefined,
+              subjectType: folderType,
+              sellerNip: (inv.seller as Record<string, unknown>)?.nip as string | undefined,
+              buyerNip: (inv.buyer as Record<string, unknown>)?.nip as string | undefined,
+            },
+          });
+
+          if (!saveResult.alreadyExisted) {
+            totalDownloaded++;
+          } else {
+            totalSkipped++;
+          }
+        } catch (error) {
+          totalErrors++;
+          errors.push({
+            invoiceId: invoice.data.ksefNumber as string,
+            error: error instanceof Error ? error.message : 'Unknown error',
+          });
+        }
+
+        tracker.increment();
+        downloadSpinner.update(tracker.toString());
+        await new Promise((resolve) => setTimeout(resolve, INTER_REQUEST_DELAY_MS));
+      }
+
+      downloadSpinner.succeed(`Download complete: ${totalDownloaded} invoices saved`);
+    }
 
     // Terminate session
     if (sessionId != null) {
