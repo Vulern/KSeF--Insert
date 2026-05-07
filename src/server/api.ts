@@ -564,6 +564,7 @@ export function setupApiRoutes(app: Hono): void {
             let skipped = 0;
             let errors = 0;
             const failedInvoices: Array<{ ksefRef: string; error: string }> = [];
+            const newFilePaths: string[] = [];
 
             if (useExport) {
               // ── Batch export flow ────────────────────────────────────────
@@ -626,7 +627,7 @@ export function setupApiRoutes(app: Hono): void {
                               ?? (item.metadata.buyer as Record<string, unknown>)?.nip) as string,
                           },
                         });
-                        if (saveResult.alreadyExisted) { skipped++; } else { downloaded++; }
+                        if (saveResult.alreadyExisted) { skipped++; } else { downloaded++; newFilePaths.push(saveResult.filePath); }
                       } catch (err) {
                         errors++;
                         failedInvoices.push({
@@ -683,7 +684,7 @@ export function setupApiRoutes(app: Hono): void {
                     },
                   });
 
-                  if (saveResult.alreadyExisted) { skipped++; } else { downloaded++; }
+                  if (saveResult.alreadyExisted) { skipped++; } else { downloaded++; newFilePaths.push(saveResult.filePath); }
 
                   const percentage = Math.round(((i + 1) / invoices.length) * 100);
                   sendProgress({
@@ -701,6 +702,34 @@ export function setupApiRoutes(app: Hono): void {
               }
             }
 
+            // Validate newly downloaded invoices
+            let validationResult: { total: number; valid: number; invalid: number; errors: Array<{ file: string; errors: string[] }> } | undefined;
+            if (newFilePaths.length > 0) {
+              sendProgress({ status: `Walidacja ${newFilePaths.length} nowo pobranych faktur...` });
+              const validator = new InvoiceXMLValidator();
+              let vValid = 0;
+              let vInvalid = 0;
+              const vErrors: Array<{ file: string; errors: string[] }> = [];
+              for (const filePath of newFilePaths) {
+                try {
+                  const result = await validator.validate(filePath);
+                  if (result.valid) {
+                    vValid++;
+                  } else {
+                    vInvalid++;
+                    vErrors.push({ file: result.fileName, errors: result.errors.map((e) => e.message).slice(0, 3) });
+                  }
+                } catch (err) {
+                  vInvalid++;
+                  vErrors.push({
+                    file: path.basename(filePath),
+                    errors: [err instanceof Error ? err.message : 'Validation error'],
+                  });
+                }
+              }
+              validationResult = { total: newFilePaths.length, valid: vValid, invalid: vInvalid, errors: vErrors.slice(0, 10) };
+            }
+
             // Cleanup session
             try {
               await client.terminateSession();
@@ -709,7 +738,7 @@ export function setupApiRoutes(app: Hono): void {
             }
 
             // Send completion
-            sendProgress({ downloaded, skipped, errors, total: invoices.length, failedInvoices });
+            sendProgress({ downloaded, skipped, errors, total: invoices.length, failedInvoices, validation: validationResult });
             clearInterval(heartbeatInterval);
             controller.close();
           } catch (error) {

@@ -22,6 +22,7 @@ import {
   printWarning,
 } from '../formatter.js';
 import { Progress, ProgressTracker } from '../progress.js';
+import { InvoiceXMLValidator } from '../../validator/xml-validator.js';
 
 /**
  * Above this count the export (batch) flow is used instead of one-by-one downloads.
@@ -193,6 +194,7 @@ async function syncAction(options: SyncOptions): Promise<void> {
     // Download invoices — use batch export above the threshold, one-by-one below
     console.log();
 
+    const newFilePaths: string[] = [];
     const useExport = invoicesToDownload.length >= EXPORT_THRESHOLD;
     if (useExport) {
       printInfo(
@@ -270,6 +272,7 @@ async function syncAction(options: SyncOptions): Promise<void> {
                 });
                 if (!saveResult.alreadyExisted) {
                   totalDownloaded++;
+                  newFilePaths.push(saveResult.filePath);
                 } else {
                   totalSkipped++;
                 }
@@ -323,6 +326,7 @@ async function syncAction(options: SyncOptions): Promise<void> {
 
           if (!saveResult.alreadyExisted) {
             totalDownloaded++;
+            newFilePaths.push(saveResult.filePath);
           } else {
             totalSkipped++;
           }
@@ -354,6 +358,43 @@ async function syncAction(options: SyncOptions): Promise<void> {
       }
     }
 
+    // Validate newly downloaded invoices
+    let vTotal = 0;
+    let vValid = 0;
+    let vInvalid = 0;
+    const vErrors: Array<{ file: string; errors: string[] }> = [];
+
+    if (newFilePaths.length > 0) {
+      console.log();
+      const validationSpinner = new Progress();
+      validationSpinner.start(`🔍 Validating ${newFilePaths.length} downloaded invoice${newFilePaths.length !== 1 ? 's' : ''}...`);
+      const validator = new InvoiceXMLValidator();
+      for (const filePath of newFilePaths) {
+        try {
+          const result = await validator.validate(filePath);
+          vTotal++;
+          if (result.valid) {
+            vValid++;
+          } else {
+            vInvalid++;
+            vErrors.push({ file: result.fileName, errors: result.errors.map((e) => e.message).slice(0, 3) });
+          }
+        } catch (err) {
+          vTotal++;
+          vInvalid++;
+          vErrors.push({
+            file: filePath.split(/[\\/]/).pop() ?? filePath,
+            errors: [err instanceof Error ? err.message : 'Validation error'],
+          });
+        }
+      }
+      if (vInvalid === 0) {
+        validationSpinner.succeed(`Validation complete: all ${vTotal} invoice${vTotal !== 1 ? 's' : ''} valid`);
+      } else {
+        validationSpinner.warn(`Validation: ${vValid}/${vTotal} valid, ${vInvalid} invalid`);
+      }
+    }
+
     // Print summary
     console.log();
     printHeader('✅ Synchronization Complete');
@@ -372,6 +413,20 @@ async function syncAction(options: SyncOptions): Promise<void> {
         console.log(colors.bold('Failed invoices:'));
         errors.forEach((err) => {
           console.log(`    - ${err.invoiceId}: ${err.error}`);
+        });
+      }
+    }
+    if (vTotal > 0) {
+      console.log(
+        `  🔍 Validation:    ${colors.success(String(vValid))} valid` +
+        (vInvalid > 0 ? `, ${colors.error(String(vInvalid))} invalid` : '')
+      );
+      if (vErrors.length > 0 && vErrors.length <= 5) {
+        console.log();
+        console.log(colors.bold('Validation errors:'));
+        vErrors.forEach((err) => {
+          console.log(`    - ${err.file}:`);
+          err.errors.forEach((e) => console.log(`        ${e}`));
         });
       }
     }
