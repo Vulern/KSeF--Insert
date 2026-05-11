@@ -9,6 +9,7 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
     "start": "tsx src/index.ts",
+    "desktop:shortcut": "powershell -ExecutionPolicy Bypass -File scripts/Create-DesktopShortcut.ps1",
     "sync": "tsx src/index.ts sync",
     "test": "vitest --run",
     "test:ui": "vitest --ui",
