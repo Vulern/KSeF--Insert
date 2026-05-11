@@ -16,6 +16,7 @@ import { maskNip } from '../utils/sanitize.js';
 import fs from 'fs/promises';
 import path from 'path';
 import axios from 'axios';
+import { resolveProjectDotenvPath } from './dotenv-path.js';
 
 function getTodayIsoDate(): string {
   const d = new Date();
@@ -320,7 +321,7 @@ export function setupApiRoutes(app: Hono): void {
 
   // GET /api/diagnose - diagnostic report
   app.get('/api/diagnose', async (c: Context) => {
-    const envFilePath = path.join(process.cwd(), '.env');
+    const envFilePath = resolveProjectDotenvPath();
     const envFile = await fs
       .access(envFilePath)
       .then(() => true)
@@ -565,6 +566,11 @@ export function setupApiRoutes(app: Hono): void {
             let errors = 0;
             const failedInvoices: Array<{ ksefRef: string; error: string }> = [];
             const newFilePaths: string[] = [];
+            const monthsTouched = new Set<string>();
+            const monthsTouchedByType: Record<'zakup' | 'sprzedaz', Set<string>> = {
+              zakup: new Set<string>(),
+              sprzedaz: new Set<string>(),
+            };
 
             if (useExport) {
               // ── Batch export flow ────────────────────────────────────────
@@ -627,7 +633,17 @@ export function setupApiRoutes(app: Hono): void {
                               ?? (item.metadata.buyer as Record<string, unknown>)?.nip) as string,
                           },
                         });
-                        if (saveResult.alreadyExisted) { skipped++; } else { downloaded++; newFilePaths.push(saveResult.filePath); }
+                        if (saveResult.alreadyExisted) {
+                          skipped++;
+                        } else {
+                          downloaded++;
+                          newFilePaths.push(saveResult.filePath);
+                          const m = saveResult.filePath.match(/[\\/](\d{4}-\d{2})[\\/](zakup|sprzedaz)[\\/]/);
+                          if (m) {
+                            monthsTouched.add(m[1]);
+                            monthsTouchedByType[m[2] as 'zakup' | 'sprzedaz'].add(m[1]);
+                          }
+                        }
                       } catch (err) {
                         errors++;
                         failedInvoices.push({
@@ -684,7 +700,17 @@ export function setupApiRoutes(app: Hono): void {
                     },
                   });
 
-                  if (saveResult.alreadyExisted) { skipped++; } else { downloaded++; newFilePaths.push(saveResult.filePath); }
+                  if (saveResult.alreadyExisted) {
+                    skipped++;
+                  } else {
+                    downloaded++;
+                    newFilePaths.push(saveResult.filePath);
+                    const m = saveResult.filePath.match(/[\\/](\d{4}-\d{2})[\\/](zakup|sprzedaz)[\\/]/);
+                    if (m) {
+                      monthsTouched.add(m[1]);
+                      monthsTouchedByType[m[2] as 'zakup' | 'sprzedaz'].add(m[1]);
+                    }
+                  }
 
                   const percentage = Math.round(((i + 1) / invoices.length) * 100);
                   sendProgress({
@@ -698,6 +724,26 @@ export function setupApiRoutes(app: Hono): void {
                   serverLogger.error({ ksefRef, error: errMsg }, 'Error processing invoice');
                   errors++;
                   failedInvoices.push({ ksefRef, error: errMsg });
+                }
+              }
+            }
+
+            // Build monthly JPK_VAT(3) files for touched months (separate zakup/sprzedaz)
+            if (monthsTouched.size > 0) {
+              sendProgress({ status: 'Budowanie plików JPK_VAT(3) za miesiące…' });
+              for (const month of monthsTouched) {
+                try {
+                  if (monthsTouchedByType.sprzedaz.has(month)) {
+                    await fileManager.buildMonthlyJpkVat3({ month, folderType: 'sprzedaz' });
+                  }
+                  if (monthsTouchedByType.zakup.has(month)) {
+                    await fileManager.buildMonthlyJpkVat3({ month, folderType: 'zakup' });
+                  }
+                } catch (e) {
+                  sendProgress({
+                    status: `Uwaga: nie udało się zbudować JPK_VAT(3) (${month}): ${e instanceof Error ? e.message : String(e)}`,
+                    warning: true,
+                  });
                 }
               }
             }

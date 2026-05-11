@@ -66,24 +66,23 @@ describe('Logger + diagnostics basics', () => {
   });
 
   it('Diagnose detects missing .env → status: fail', async () => {
+    const emptyProjectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'ksef-diagnose-noenv-'));
+    const missingEnvPath = path.join(emptyProjectDir, '.env');
     vi.resetModules();
-    vi.doMock('fs/promises', async () => {
-      const actual: any = await vi.importActual('fs/promises');
-      return {
-        ...actual,
-        access: async (p: any) => {
-          if (String(p).endsWith('.env')) throw Object.assign(new Error('missing'), { code: 'ENOENT' });
-          return actual.access(p);
-        },
-      };
-    });
-
-    const { createApp } = await import('../src/server/app.js');
-    const app = createApp();
-    const res = await app.request('/api/diagnose');
-    expect(res.status).toBe(200);
-    const data = await res.json();
-    expect(data.checks?.env?.status).toBe('fail');
+    vi.doMock('../src/server/dotenv-path.js', () => ({
+      resolveProjectDotenvPath: () => missingEnvPath,
+    }));
+    try {
+      const { createApp } = await import('../src/server/app.js');
+      const app = createApp();
+      const res = await app.request('/api/diagnose');
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.checks?.env?.status).toBe('fail');
+    } finally {
+      vi.doUnmock('../src/server/dotenv-path.js');
+      vi.resetModules();
+    }
   });
 
   it('Filters logs by level and module', async () => {

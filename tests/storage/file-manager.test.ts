@@ -422,7 +422,7 @@ describe('Invoice File Manager (file-manager.ts)', () => {
 
       await manager.saveInvoice({ xml, header });
 
-      const folderPath = path.join(tempDir, '2024-01', 'zakup');
+      const folderPath = path.join(tempDir, 'faktury', '2024-01', 'zakup');
       const stats = await fs.stat(folderPath);
       expect(stats.isDirectory()).toBe(true);
     });
@@ -436,7 +436,13 @@ describe('Invoice File Manager (file-manager.ts)', () => {
 
       await manager.saveInvoice({ xml: customXml, header });
 
-      const filePath = path.join(tempDir, '2024-01', 'zakup', '2024-01-15_5213000001_1234567890-20240115-ABC123.xml');
+      const filePath = path.join(
+        tempDir,
+        'faktury',
+        '2024-01',
+        'zakup',
+        '2024-01-15_5213000001_1234567890-20240115-ABC123.xml'
+      );
       const savedContent = await fs.readFile(filePath, 'utf-8');
 
       expect(savedContent).toBe(customXml);
@@ -735,7 +741,7 @@ describe('Invoice File Manager (file-manager.ts)', () => {
       // For now, verify normal operation doesn't leave temp files
       await manager.saveInvoice({ xml, header });
 
-      const folderPath = path.join(tempDir, '2024-01', 'zakup');
+      const folderPath = path.join(tempDir, 'faktury', '2024-01', 'zakup');
       const files = await fs.readdir(folderPath);
 
       // Should only have .xml files, no .tmp files

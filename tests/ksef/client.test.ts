@@ -401,11 +401,19 @@ describe('KsefClient', () => {
       expect(result.numberOfElements).toBe(1);
       expect(mockAxiosInstance.post).toHaveBeenCalledWith(
         '/invoices/query/metadata',
+        {
+          subjectType: undefined,
+          dateRange: undefined,
+        },
         expect.objectContaining({
-          pageSize: 100,
-          pageOffset: 0,
-        }),
-        expect.any(Object)
+          headers: expect.objectContaining({
+            Authorization: 'Bearer access-token-123',
+          }),
+          params: {
+            pageSize: 100,
+            pageOffset: 0,
+          },
+        })
       );
     });
 
