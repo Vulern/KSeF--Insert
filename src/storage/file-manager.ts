@@ -14,6 +14,8 @@ import { KsefValidationError } from '../errors.js';
 import { maskNip } from '../utils/sanitize.js';
 import { IndexTracker } from './index-tracker.js';
 import { generateFileName, generateFolderPath, isValidFileName } from './naming.js';
+import { buildJpkFaXml, ksefInvoiceXmlToJpkFaEntry, type JpkFolderType } from '../transformer/jpk-fa.js';
+import { buildJpkVat3Xml, ksefInvoiceXmlToJpkVat3Row, type JpkVatFolderType } from '../transformer/jpk-vat3.js';
 import type {
   FileManagerConfig,
   InvoiceHeader,
@@ -79,6 +81,20 @@ export class InvoiceFileManager {
     }
   }
 
+  private async ensureDir(dirPath: string): Promise<void> {
+    await fs.mkdir(dirPath, { recursive: true });
+  }
+
+  private getInvoicesDir(): string {
+    // Raw invoices (as downloaded from KSeF) remain under faktury/
+    return path.join(this.baseDir, 'faktury');
+  }
+
+  private getJpkDir(): string {
+    // Monthly JPK files are stored separately for easy import
+    return path.join(this.baseDir, 'jpk');
+  }
+
   /**
    * Save single invoice to disk
    * Returns file path, file name, and whether it already existed
@@ -119,15 +135,15 @@ export class InvoiceFileManager {
       };
     }
 
-    // Generate file path
-    const folderPath = generateFolderPath(header);
+    // Generate raw invoice file path (KSeF XML kept for traceability + rebuilding monthly JPK)
+    const folderPath = path.join('faktury', generateFolderPath(header));
     const fileName = generateFileName(header);
     const fullFolderPath = path.join(this.baseDir, folderPath);
     const filePath = path.join(fullFolderPath, fileName);
 
     try {
       // Create directories recursively
-      await fs.mkdir(fullFolderPath, { recursive: true });
+      await this.ensureDir(fullFolderPath);
       storageLogger.info('📁 Utworzono katalog', { path: fullFolderPath });
 
       // Check if file exists (double-check in case of concurrent writes)
@@ -196,6 +212,150 @@ export class InvoiceFileManager {
         }
       );
     }
+  }
+
+  /**
+   * Build or rebuild monthly JPK_FA file for a given month and folder type.
+   * Reads raw KSeF invoices from `faktury/<YYYY-MM>/<zakup|sprzedaz>/` and outputs:
+   * `jpk/<YYYY-MM>/<zakup|sprzedaz>/JPK_FA_<YYYY-MM>.xml`
+   */
+  async buildMonthlyJpkFa(params: { month: string; folderType: JpkFolderType }): Promise<{ filePath: string; invoices: number }> {
+    if (!this.indexLoaded) {
+      throw new KsefValidationError('File manager not initialized. Call initialize() first.');
+    }
+
+    const { month, folderType } = params;
+    const m = month.match(/^(\d{4})-(\d{2})$/);
+    if (!m) throw new KsefValidationError(`Invalid month: ${month} (expected YYYY-MM)`);
+
+    const rawDir = path.join(this.getInvoicesDir(), month, folderType);
+    let rawFiles: string[] = [];
+    try {
+      rawFiles = (await fs.readdir(rawDir)).filter((f) => f.toLowerCase().endsWith('.xml'));
+    } catch {
+      // No raw invoices for that month/type
+      rawFiles = [];
+    }
+
+    const entries = [];
+    for (const f of rawFiles) {
+      const full = path.join(rawDir, f);
+      try {
+        const xml = await fs.readFile(full, 'utf-8');
+        const inv = ksefInvoiceXmlToJpkFaEntry({
+          xml,
+          folderType,
+          companyNip: this.config.companyNip || '',
+        });
+        entries.push(inv);
+      } catch (err) {
+        storageLogger.warn('⚠️ Pomijam fakturę przy budowie JPK_FA', {
+          file: full,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    const podmiotNip = this.config.companyNip || '';
+    if (!podmiotNip) {
+      throw new KsefValidationError('companyNip is required to build monthly JPK_FA');
+    }
+
+    // Pick company name from invoices (seller for sprzedaz, buyer for zakup) if present.
+    const podmiotName =
+      folderType === 'sprzedaz'
+        ? entries.find((e) => e.seller.pelnaNazwa && e.seller.nip === podmiotNip)?.seller.pelnaNazwa
+        : entries.find((e) => e.buyer.pelnaNazwa && e.buyer.nip === podmiotNip)?.buyer.pelnaNazwa;
+
+    const xmlOut = buildJpkFaXml({
+      month,
+      podmiot: { nip: podmiotNip, pelnaNazwa: podmiotName ?? undefined },
+      invoices: entries,
+    });
+
+    const outDir = path.join(this.getJpkDir(), month, folderType);
+    await this.ensureDir(outDir);
+
+    const outPath = path.join(outDir, `JPK_FA_${month}.xml`);
+    const tmp = `${outPath}.tmp`;
+    await fs.writeFile(tmp, xmlOut, 'utf-8');
+    await fs.rename(tmp, outPath);
+
+    storageLogger.info('📦 Zbudowano JPK_FA', { month, folderType, outPath, invoices: entries.length });
+
+    return { filePath: outPath, invoices: entries.length };
+  }
+
+  /**
+   * Build monthly JPK_VAT(3) file for a given month and folder type.
+   * Reads raw KSeF invoices from `faktury/<YYYY-MM>/<zakup|sprzedaz>/` and outputs:
+   * `jpk/<YYYY-MM>/<zakup|sprzedaz>/JPK_VAT_<YYYY-MM>.xml`
+   */
+  async buildMonthlyJpkVat3(params: { month: string; folderType: JpkVatFolderType }): Promise<{ filePath: string; rows: number }> {
+    if (!this.indexLoaded) {
+      throw new KsefValidationError('File manager not initialized. Call initialize() first.');
+    }
+
+    const { month, folderType } = params;
+    const m = month.match(/^(\d{4})-(\d{2})$/);
+    if (!m) throw new KsefValidationError(`Invalid month: ${month} (expected YYYY-MM)`);
+
+    const rawDir = path.join(this.getInvoicesDir(), month, folderType);
+    let rawFiles: string[] = [];
+    try {
+      rawFiles = (await fs.readdir(rawDir)).filter((f) => f.toLowerCase().endsWith('.xml'));
+    } catch {
+      rawFiles = [];
+    }
+
+    const rows: Array<{ kind: 'zakup' | 'sprzedaz'; row: any }> = [];
+    for (const f of rawFiles) {
+      const full = path.join(rawDir, f);
+      try {
+        const xml = await fs.readFile(full, 'utf-8');
+        rows.push(
+          ksefInvoiceXmlToJpkVat3Row({
+            xml,
+            folderType,
+            companyNip: this.config.companyNip || '',
+          })
+        );
+      } catch (err) {
+        storageLogger.warn('⚠️ Pomijam fakturę przy budowie JPK_VAT(3)', {
+          file: full,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    const podmiotNip = this.config.companyNip || '';
+    if (!podmiotNip) {
+      throw new KsefValidationError('companyNip is required to build monthly JPK_VAT(3)');
+    }
+
+    // Best-effort: try to infer full name from any raw invoice row (we may not have it).
+    // If missing, buildJpkVat3Xml will fall back to `Podmiot_<NIP>`.
+    const podmiotName: string | undefined = undefined;
+
+    const xmlOut = buildJpkVat3Xml({
+      month,
+      podmiotNip,
+      podmiotPelnaNazwa: podmiotName,
+      rows,
+      systemName: 'KSeF--Insert',
+    });
+
+    const outDir = path.join(this.getJpkDir(), month, folderType);
+    await this.ensureDir(outDir);
+
+    const outPath = path.join(outDir, `JPK_VAT_${month}.xml`);
+    const tmp = `${outPath}.tmp`;
+    await fs.writeFile(tmp, xmlOut, 'utf-8');
+    await fs.rename(tmp, outPath);
+
+    storageLogger.info('📦 Zbudowano JPK_VAT(3)', { month, folderType, outPath, rows: rows.length });
+
+    return { filePath: outPath, rows: rows.length };
   }
 
   /**

@@ -195,6 +195,11 @@ async function syncAction(options: SyncOptions): Promise<void> {
     console.log();
 
     const newFilePaths: string[] = [];
+    const monthsTouched = new Set<string>();
+    const monthsTouchedByType: Record<'zakup' | 'sprzedaz', Set<string>> = {
+      zakup: new Set<string>(),
+      sprzedaz: new Set<string>(),
+    };
     const useExport = invoicesToDownload.length >= EXPORT_THRESHOLD;
     if (useExport) {
       printInfo(
@@ -273,6 +278,11 @@ async function syncAction(options: SyncOptions): Promise<void> {
                 if (!saveResult.alreadyExisted) {
                   totalDownloaded++;
                   newFilePaths.push(saveResult.filePath);
+                  const m = saveResult.filePath.match(/[\\/](\d{4}-\d{2})[\\/](zakup|sprzedaz)[\\/]/);
+                  if (m) {
+                    monthsTouched.add(m[1]);
+                    monthsTouchedByType[m[2] as 'zakup' | 'sprzedaz'].add(m[1]);
+                  }
                 } else {
                   totalSkipped++;
                 }
@@ -327,6 +337,11 @@ async function syncAction(options: SyncOptions): Promise<void> {
           if (!saveResult.alreadyExisted) {
             totalDownloaded++;
             newFilePaths.push(saveResult.filePath);
+            const m = saveResult.filePath.match(/[\\/](\d{4}-\d{2})[\\/](zakup|sprzedaz)[\\/]/);
+            if (m) {
+              monthsTouched.add(m[1]);
+              monthsTouchedByType[m[2] as 'zakup' | 'sprzedaz'].add(m[1]);
+            }
           } else {
             totalSkipped++;
           }
@@ -344,6 +359,26 @@ async function syncAction(options: SyncOptions): Promise<void> {
       }
 
       downloadSpinner.succeed(`Download complete: ${totalDownloaded} invoices saved`);
+    }
+
+    // Build monthly JPK_VAT(3) files for touched months (separate zakup/sprzedaz)
+    if (monthsTouched.size > 0) {
+      console.log();
+      const jpkSpinner = new Progress();
+      jpkSpinner.start(`📦 Building monthly JPK_VAT(3) files...`);
+      try {
+        for (const month of monthsTouched) {
+          if (monthsTouchedByType.sprzedaz.has(month)) {
+            await fileManager.buildMonthlyJpkVat3({ month, folderType: 'sprzedaz' });
+          }
+          if (monthsTouchedByType.zakup.has(month)) {
+            await fileManager.buildMonthlyJpkVat3({ month, folderType: 'zakup' });
+          }
+        }
+        jpkSpinner.succeed(`Monthly JPK_VAT(3) generated for ${monthsTouched.size} month(s)`);
+      } catch (e) {
+        jpkSpinner.warn(`JPK_VAT(3) generation failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
     }
 
     // Terminate session
