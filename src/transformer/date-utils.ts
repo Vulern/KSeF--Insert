@@ -1,8 +1,3 @@
-/**
- * Date utilities
- * Konwersja dat z ISO do formatu DD.MM.YYYY dla Insert
- */
-
 import { TransformError } from '../errors.js';
 import { logger } from '../logger.js';
 
