@@ -522,8 +522,8 @@ export class KsefClient {
    * Stores access/refresh tokens for subsequent requests.
    */
   async authenticate(nip?: string, token?: string): Promise<{ referenceNumber: string }> {
-    const authNip = nip || this.clientConfig.nip;
-    const tokenKsef = token || this.clientConfig.token;
+    const authNip = nip ?? this.clientConfig.nip;
+    const tokenKsef = token ?? this.clientConfig.token;
 
     if (!authNip || !tokenKsef) {
       throw new KsefValidationError('NIP and token are required for authentication', {

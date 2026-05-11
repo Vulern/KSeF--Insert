@@ -16,6 +16,7 @@ import { maskNip } from '../utils/sanitize.js';
 import fs from 'fs/promises';
 import path from 'path';
 import axios from 'axios';
+import { resolveProjectDotenvPath } from './dotenv-path.js';
 
 function getTodayIsoDate(): string {
   const d = new Date();
@@ -320,7 +321,7 @@ export function setupApiRoutes(app: Hono): void {
 
   // GET /api/diagnose - diagnostic report
   app.get('/api/diagnose', async (c: Context) => {
-    const envFilePath = path.join(process.cwd(), '.env');
+    const envFilePath = resolveProjectDotenvPath();
     const envFile = await fs
       .access(envFilePath)
       .then(() => true)
