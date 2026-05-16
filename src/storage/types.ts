@@ -52,4 +52,6 @@ export interface InvoiceIndex {
 export interface FileManagerConfig {
   outputDir: string;
   companyNip?: string;
+  /** Kod urzędu skarbowego (4 cyfry wg wykazu MF) — wymagany do JPK_V7M(3) z polem NrKSeF */
+  taxOfficeCode?: string;
 }

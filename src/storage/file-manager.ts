@@ -13,9 +13,15 @@ import { storageLogger } from '../logger.js';
 import { KsefValidationError } from '../errors.js';
 import { maskNip } from '../utils/sanitize.js';
 import { IndexTracker } from './index-tracker.js';
-import { generateFileName, generateFolderPath, isValidFileName } from './naming.js';
+import { generateFileName, generateFolderPath, isValidFileName, parseKsefReferenceFromInvoiceFileName } from './naming.js';
 import { buildJpkFaXml, ksefInvoiceXmlToJpkFaEntry, type JpkFolderType } from '../transformer/jpk-fa.js';
-import { buildJpkVat3Xml, ksefInvoiceXmlToJpkVat3Row, type JpkVatFolderType } from '../transformer/jpk-vat3.js';
+import {
+  buildInsertJpkVat2017Xml,
+  buildJpkV7m3WithKsefXml,
+  ksefInvoiceXmlToJpkVat3Row,
+  type JpkVatFolderType,
+  type JpkVat3RowBase,
+} from '../transformer/jpk-vat3.js';
 import type {
   FileManagerConfig,
   InvoiceHeader,
@@ -24,6 +30,11 @@ import type {
   SavedInvoiceInfo,
   IndexEntry,
 } from './types.js';
+
+function csvSemicolonField(field: string): string {
+  if (/[;\r\n"]/.test(field)) return `"${field.replace(/"/g, '""')}"`;
+  return field;
+}
 
 /**
  * Manages invoice XML file storage with duplicate prevention
@@ -44,6 +55,7 @@ export class InvoiceFileManager {
     this.config = {
       outputDir: config.outputDir,
       companyNip,
+      taxOfficeCode: config.taxOfficeCode?.trim(),
     };
 
     // When a company NIP is provided, scope all files under outputDir/<NIP>/
@@ -287,9 +299,10 @@ export class InvoiceFileManager {
   }
 
   /**
-   * Build monthly JPK_VAT(3) file for a given month and folder type.
-   * Reads raw KSeF invoices from `faktury/<YYYY-MM>/<zakup|sprzedaz>/` and outputs:
-   * `jpk/<YYYY-MM>/<zakup|sprzedaz>/JPK_VAT_<YYYY-MM>.xml`
+   * Buduje miesięczne pliki JPK:
+   * 1. **`JPK_VAT_<YYYY-MM>.xml`** — schemat **2017** (`JPK_VAT (3)`), **import do InsERT** (bez pola NrKSeF w XSD).
+   * 2. Opcjonalnie **`JPK_V7M_KSEF_<YYYY-MM>.xml`** — **JPK_V7M(3)** z `NrKSeF` (wymaga `INSERT_KOD_URZEDU`; nowsza wersja InsERT może go jeszcze nie rozpoznawać).
+   * Reads raw KSeF invoices from `faktury/<YYYY-MM>/<zakup|sprzedaz>/`.
    */
   async buildMonthlyJpkVat3(params: { month: string; folderType: JpkVatFolderType }): Promise<{ filePath: string; rows: number }> {
     if (!this.indexLoaded) {
@@ -308,16 +321,18 @@ export class InvoiceFileManager {
       rawFiles = [];
     }
 
-    const rows: Array<{ kind: 'zakup' | 'sprzedaz'; row: any }> = [];
+    const rows: Array<{ kind: 'zakup' | 'sprzedaz'; row: JpkVat3RowBase }> = [];
     for (const f of rawFiles) {
       const full = path.join(rawDir, f);
       try {
         const xml = await fs.readFile(full, 'utf-8');
+        const ksefRef = parseKsefReferenceFromInvoiceFileName(f);
         rows.push(
           ksefInvoiceXmlToJpkVat3Row({
             xml,
             folderType,
             companyNip: this.config.companyNip || '',
+            ksefReferenceNumber: ksefRef,
           })
         );
       } catch (err) {
@@ -333,11 +348,11 @@ export class InvoiceFileManager {
       throw new KsefValidationError('companyNip is required to build monthly JPK_VAT(3)');
     }
 
-    // Best-effort: try to infer full name from any raw invoice row (we may not have it).
-    // If missing, buildJpkVat3Xml will fall back to `Podmiot_<NIP>`.
+    const taxOfficeCode = (this.config.taxOfficeCode ?? '').trim();
+
     const podmiotName: string | undefined = undefined;
 
-    const xmlOut = buildJpkVat3Xml({
+    const xmlInsert = buildInsertJpkVat2017Xml({
       month,
       podmiotNip,
       podmiotPelnaNazwa: podmiotName,
@@ -350,10 +365,50 @@ export class InvoiceFileManager {
 
     const outPath = path.join(outDir, `JPK_VAT_${month}.xml`);
     const tmp = `${outPath}.tmp`;
-    await fs.writeFile(tmp, xmlOut, 'utf-8');
+    await fs.writeFile(tmp, xmlInsert, 'utf-8');
     await fs.rename(tmp, outPath);
 
-    storageLogger.info('📦 Zbudowano JPK_VAT(3)', { month, folderType, outPath, rows: rows.length });
+    if (/^\d{4}$/.test(taxOfficeCode)) {
+      try {
+        const xmlV7 = buildJpkV7m3WithKsefXml({
+          month,
+          podmiotNip,
+          podmiotPelnaNazwa: podmiotName,
+          rows,
+          systemName: 'KSeF--Insert',
+          taxOfficeCode,
+        });
+        const v7Path = path.join(outDir, `JPK_V7M_KSEF_${month}.xml`);
+        const tmpV7 = `${v7Path}.tmp`;
+        await fs.writeFile(tmpV7, xmlV7, 'utf-8');
+        await fs.rename(tmpV7, v7Path);
+        storageLogger.info('📦 Zapisano dodatkowo JPK_V7M(3) z NrKSeF', { v7Path });
+      } catch (e) {
+        storageLogger.warn('⚠️ Nie udało się zapisać JPK_V7M_KSEF', {
+          error: e instanceof Error ? e.message : String(e),
+        });
+      }
+    } else {
+      storageLogger.warn(
+        'ℹ️ Pominięto JPK_V7M_KSEF (ustaw INSERT_KOD_URZEDU=4 cyfry, aby wygenerować plik z polem NrKSeF dla przyszłych wersji InsERT / MF).'
+      );
+    }
+
+    const ksefLines = rows
+      .map((r) => r.row)
+      .filter((row) => row.ksefReferenceNumber)
+      .map(
+        (row) =>
+          `${csvSemicolonField(row.documentNumber)};${csvSemicolonField(row.ksefReferenceNumber!)}`
+      );
+    if (ksefLines.length > 0) {
+      const csvPath = path.join(outDir, `KSeF_numery_${month}_${folderType}.csv`);
+      const csvBody = `\ufeffNumer dowodu;Numer KSeF\n${ksefLines.join('\n')}\n`;
+      await fs.writeFile(csvPath, csvBody, 'utf-8');
+      storageLogger.info('📎 Zapisano mapowanie numerów KSeF (CSV)', { csvPath, lines: ksefLines.length });
+    }
+
+    storageLogger.info('📦 Zbudowano JPK_VAT(2017) do importu InsERT', { month, folderType, outPath, rows: rows.length });
 
     return { filePath: outPath, rows: rows.length };
   }

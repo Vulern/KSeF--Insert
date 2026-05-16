@@ -85,7 +85,11 @@ async function syncAction(options: SyncOptions): Promise<void> {
 
   try {
     // Initialize file manager
-    const fileManager = new InvoiceFileManager({ outputDir: config.insert.outputDir, companyNip: config.ksef.nip });
+    const fileManager = new InvoiceFileManager({
+      outputDir: config.insert.outputDir,
+      companyNip: config.ksef.nip,
+      taxOfficeCode: config.insert.taxOfficeCode,
+    });
     await fileManager.initialize();
 
     // Connect to KSeF

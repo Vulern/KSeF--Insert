@@ -78,6 +78,15 @@ export const generateFileName = (header: InvoiceHeader): string => {
 };
 
 /**
+ * Odtwarza numer KSeF z nazwy pliku {@link generateFileName} (YYYY-MM-DD_NIP_KSEF_REF.xml).
+ */
+export const parseKsefReferenceFromInvoiceFileName = (fileName: string): string | undefined => {
+  const base = fileName.replace(/^.*[/\\]/, '');
+  const m = base.match(/^\d{4}-\d{2}-\d{2}_\d+_(.+)\.xml$/i);
+  return m ? m[1] : undefined;
+};
+
+/**
  * Generate folder path from invoice date and type
  * Format: YYYY-MM/zakup|sprzedaz
  */
