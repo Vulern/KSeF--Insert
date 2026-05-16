@@ -17,6 +17,7 @@ const configSchema = z.object({
     outputDir: z.string(),
     csvDelimiter: z.string(),
     csvEncoding: z.enum(['win1250', 'utf8']),
+    taxOfficeCode: z.string().optional(),
   }),
   logLevel: z.enum(['debug', 'info', 'warn', 'error']).optional(),
 });
@@ -36,6 +37,7 @@ export const loadConfig = (): Config => {
         outputDir: process.env.INSERT_OUTPUT_DIR || './output',
         csvDelimiter: process.env.INSERT_CSV_DELIMITER || ';',
         csvEncoding: (process.env.INSERT_CSV_ENCODING || 'win1250') as 'win1250' | 'utf8',
+        taxOfficeCode: process.env.INSERT_KOD_URZEDU,
       },
       logLevel: (process.env.LOG_LEVEL || 'info') as 'debug' | 'info' | 'warn' | 'error',
     };

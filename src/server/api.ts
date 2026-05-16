@@ -84,7 +84,11 @@ let sharedFileManager: InvoiceFileManager | null = null;
 
 async function getSharedFileManager(): Promise<InvoiceFileManager> {
   if (!sharedFileManager) {
-    sharedFileManager = new InvoiceFileManager({ outputDir: config.insert.outputDir, companyNip: config.ksef.nip });
+    sharedFileManager = new InvoiceFileManager({
+      outputDir: config.insert.outputDir,
+      companyNip: config.ksef.nip,
+      taxOfficeCode: config.insert.taxOfficeCode,
+    });
     await sharedFileManager.initialize();
   }
   return sharedFileManager;
@@ -479,7 +483,11 @@ export function setupApiRoutes(app: Hono): void {
 
           try {
             const client = new KsefClient();
-            const fileManager = new InvoiceFileManager({ outputDir: config.insert.outputDir, companyNip: config.ksef.nip });
+            const fileManager = new InvoiceFileManager({
+      outputDir: config.insert.outputDir,
+      companyNip: config.ksef.nip,
+      taxOfficeCode: config.insert.taxOfficeCode,
+    });
 
             // Helper to send SSE message
             const sendProgress = (data: Record<string, unknown>) => {
@@ -822,7 +830,11 @@ export function setupApiRoutes(app: Hono): void {
       const month = c.req.query('month'); // "2024-01"
       const invoiceType = c.req.query('type') || 'zakup'; // "zakup" or "sprzedaz"
 
-      const fileManager = new InvoiceFileManager({ outputDir: config.insert.outputDir, companyNip: config.ksef.nip });
+      const fileManager = new InvoiceFileManager({
+      outputDir: config.insert.outputDir,
+      companyNip: config.ksef.nip,
+      taxOfficeCode: config.insert.taxOfficeCode,
+    });
       await fileManager.initialize();
 
       // Parse month to date range
@@ -877,7 +889,11 @@ export function setupApiRoutes(app: Hono): void {
         return c.json({ error: 'ksefRef parameter required' }, 400);
       }
 
-      const fileManager = new InvoiceFileManager({ outputDir: config.insert.outputDir, companyNip: config.ksef.nip });
+      const fileManager = new InvoiceFileManager({
+      outputDir: config.insert.outputDir,
+      companyNip: config.ksef.nip,
+      taxOfficeCode: config.insert.taxOfficeCode,
+    });
       await fileManager.initialize();
 
       const savedInvoices = await fileManager.listSaved();
@@ -908,7 +924,11 @@ export function setupApiRoutes(app: Hono): void {
       const body = await c.req.json();
       const { month } = body as { month?: string };
 
-      const fileManager = new InvoiceFileManager({ outputDir: config.insert.outputDir, companyNip: config.ksef.nip });
+      const fileManager = new InvoiceFileManager({
+      outputDir: config.insert.outputDir,
+      companyNip: config.ksef.nip,
+      taxOfficeCode: config.insert.taxOfficeCode,
+    });
       const validator = new InvoiceXMLValidator();
 
       await fileManager.initialize();
