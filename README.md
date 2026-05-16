@@ -6,14 +6,14 @@
 
 Projekt TypeScript/Node.js do integracji KSeF (Krajowy System e-Faktur) z programem Insert (desktop).
 
-## 🎯 Cechy
+## Cechy
 
 - ✅ **KSeF client** (sesje, requesty, retry/error handling)
 - ✅ **Storage layer** (zapis XML na dysk, atomic writes, `.index.json` duplikaty)
 - ✅ **Walidacja XML**
 - ✅ **CLI + Web UI** (lokalne uruchomienie)
 
-## 🚀 Quick Start
+## Quick Start
 
 ### 1. Wymagania
 - **Node.js 20+** ([pobierz](https://nodejs.org/))
@@ -43,7 +43,7 @@ npm start -- sync --from 2024-01-01 --to 2024-01-31
 2. Wskaż: `./output/faktury/2024-01/zakup/`
 3. Kliknij Import ✅
 
-## 📋 Komendy CLI
+## Komendy CLI
 
 ### `sync` - Synchronizacja faktur
 ```bash
@@ -87,7 +87,7 @@ npm start -- validate
 npm start -- validate --dir ./output/faktury/2024-01/
 ```
 
-## 📁 Struktura plików
+## Struktura plików
 
 Po synchronizacji:
 ```
@@ -123,13 +123,10 @@ INSERT_OUTPUT_DIR=./output
 LOG_LEVEL=info
 ```
 
-## 📖 Dokumentacja
+## Dokumentacja
 
 - [📚 Instrukcja użytkownika](docs/instrukcja-uzytkownika.md)
 - [🛠️ Instrukcja techniczna](docs/instrukcja-techniczna.md)
-- [🏗️ Architektura](docs/architektura.md)
-- [🔌 API KSeF (referencja)](docs/ksef-api.md)
-- [📝 Changelog](docs/changelog.md)
 
 ## 🧪 Testowanie
 
@@ -150,7 +147,7 @@ npm test -- tests/e2e/
 npm run test:ui
 ```
 
-## 🔧 Developerskie komendy
+## Developerskie komendy
 
 ```bash
 npm run dev              # Watch mode
@@ -161,7 +158,7 @@ npm run lint:fix         # Fix linting issues
 npm run format           # Prettier formatting
 ```
 
-## 🌍 Środowiska
+## Środowiska
 
 ### TEST
 ```env
@@ -204,20 +201,19 @@ npm start -- validate
 LOG_LEVEL=debug npm start -- sync --from 2024-01-01 --to 2024-01-31
 ```
 
-## 📚 Zasoby
+## Zasoby
 
 - [KSeF Official Portal](https://ksef.mf.gov.pl)
 - [Ministerstwo Finansów - KSeF](https://www.mf.gov.pl/ksef)
 - [FA(2) Schema Spec](https://www.mf.gov.pl)
 
-## 📋 Licencja
+## Licencja
 
 MIT License - zobacz [LICENSE](LICENSE) dla szczegółów
 
 ---
 
-## 📞 Wsparcie
+## Wsparcie
 
 - 📖 [Instrukcja użytkownika](docs/instrukcja-uzytkownika.md) - odpowiedzi na pytania
 - 🛠️ [Instrukcja techniczna](docs/instrukcja-techniczna.md) - dla administratorów IT
-- 🔌 [API Docs](docs/ksef-api.md) - szczegóły techniczne
